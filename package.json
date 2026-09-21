@@ -1,0 +1,51 @@
+{
+  "name": "novelweaver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c cyan,green \"tsx watch server/index.ts\" \"vite --host 0.0.0.0\"",
+    "server": "tsx server/index.ts",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "start": "NODE_ENV=production tsx server/index.ts"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.9.2",
+    "better-sqlite3": "^12.4.1",
+    "d3-force": "^3.0.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0",
+    "fast-xml-parser": "^5.11.1",
+    "html-to-text": "^9.0.5",
+    "jsonrepair": "^3.15.0",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.544.0",
+    "mammoth": "^1.11.0",
+    "multer": "^2.0.2",
+    "pdf-parse": "^2.4.5",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.9.2",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/d3-force": "^3.0.10",
+    "@types/express": "^5.0.3",
+    "@types/html-to-text": "^9.0.4",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.7",
+    "vitest": "^3.2.4"
+  }
+}
