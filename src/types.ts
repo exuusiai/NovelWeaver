@@ -43,6 +43,32 @@ export interface Chapter {
   outline_status: string
 }
 
+export interface ChapterHistory {
+  id: string
+  chapter_id: string
+  title: string
+  summary: string
+  word_count: number
+  preview: string
+  created_at: string
+}
+
+export interface PrecheckIssue {
+  category: string
+  severity: string
+  title: string
+  description: string
+}
+
+export interface ProjectStats {
+  chapters: number
+  wordsTotal: number
+  generations: { total: number; appended: number; discarded: number; acceptanceRate: number | null }
+  reviews: { open: number; resolved: number; resolutionRate: number | null }
+  historyVersions: number
+  tokenCalibration: { samples: number; avgRatio: number } | null
+}
+
 export interface Volume {
   id: string
   project_id: string
@@ -192,6 +218,7 @@ export interface StoryFact {
 }
 
 export interface GenerationResult {
+  generationId?: string
   output: string
   model: string
   citations: SearchHit[]

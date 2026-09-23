@@ -20,7 +20,13 @@ type AssembledContext = { text: string; hits: SearchHit[]; report: ContextReport
 const searchCache = new Map<string, SearchHit[]>()
 const contextCache = new Map<string, AssembledContext>()
 
-const estimateTokens = (text: string) => Math.max(1, Math.ceil(text.length / 2.2))
+// CJK chars tokenize to roughly one token each on mainstream models; latin text ~4 chars/token.
+// The old length/2.2 heuristic underestimated Chinese-heavy context by 1.5-4x and blew the budget.
+const cjpPattern = /[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]/g
+export const estimateTokens = (text: string) => {
+  const cjk = (text.match(cjpPattern) || []).length
+  return Math.max(1, Math.ceil(cjk + (text.length - cjk) / 4))
+}
 const normalize = (value: string) => value.trim().toLowerCase()
 
 function projectVersion(projectId: string) {
@@ -72,6 +78,38 @@ function chapterPosition(chapterId?: string) {
 function distanceWeight(distance: number | null) {
   if (distance === null) return 0.82
   return 1 / (1 + 0.3 * Math.log(1 + distance))
+}
+
+export interface EntityState {
+  name: string
+  lastEvent: string
+  lastTime: string
+  lastLocation: string
+  eventCount: number
+}
+
+// Deterministic character state as of a chapter position: where each participant was last
+// seen, in which event, at what story time. Derived from events only — no model guessing.
+export function deriveEntityStates(projectId: string, beforePosition?: number): EntityState[] {
+  const rows = sql.all<{ title: string; story_time: string; participants: string; location: string; position: number | null }>(
+    `SELECT e.title, e.story_time, e.participants, e.location, c.position FROM events e
+     LEFT JOIN chapters c ON c.id = e.chapter_id WHERE e.project_id = ? ORDER BY e.narrative_order`, projectId)
+  const states = new Map<string, EntityState>()
+  for (const row of rows) {
+    if (beforePosition !== undefined && row.position !== null && row.position > beforePosition) continue
+    let participants: string[] = []
+    try { participants = JSON.parse(String(row.participants || '[]')) } catch { /* legacy rows */ }
+    for (const name of participants) {
+      if (typeof name !== 'string' || name.trim().length < 2) continue
+      const state = states.get(name) || { name, lastEvent: '', lastTime: '', lastLocation: '', eventCount: 0 }
+      state.eventCount += 1
+      state.lastEvent = row.title
+      if (row.story_time) state.lastTime = row.story_time
+      if (row.location) state.lastLocation = row.location
+      states.set(name, state)
+    }
+  }
+  return [...states.values()]
 }
 
 export function searchMemory(projectId: string, query: string, limit = 12, currentChapterId?: string): SearchHit[] {
@@ -166,6 +204,8 @@ export function assembleContext(projectId: string, prompt: string, chapterId?: s
   }).filter((item) => (item.matched || item.pinned || item.index < 8) && (!item.meta.contextScope || item.meta.contextScope !== 'manual' || item.matched || item.pinned))
     .sort((a, b) => b.rank - a.rank).slice(0, 18)
   const currentPosition = typeof chapter?.position === 'number' ? Number(chapter.position) : undefined
+  const states = deriveEntityStates(projectId, currentPosition).filter((state) => referenceText.includes(normalize(state.name)) || normalize(state.name) === normalize(String(chapter?.pov || '')))
+    .slice(0, 8)
   const events = allEvents.map((row) => {
     const matched = referenceText.includes(normalize(String(row.title))) || referenceText.includes(normalize(String(row.summary)).slice(0, 16))
     const distance = currentPosition === undefined || typeof row.position !== 'number' ? null : Math.abs(currentPosition - Number(row.position))
@@ -180,6 +220,8 @@ export function assembleContext(projectId: string, prompt: string, chapterId?: s
   const items: ContextItem[] = [
     make('project', '项目基线', `【项目】${project?.name ?? ''}\n题材：${project?.genre ?? ''}\n核心命题：${project?.premise ?? ''}`, 100),
     ...(chapter ? [make('chapter', `当前章节：${chapter.title}`, `【当前章节】${chapter.title}\n视角：${chapter.pov}\n摘要：${chapter.summary}\n正文末尾：${String(chapter.content).slice(-1800)}`, 98)] : []),
+    ...states.map((state) => make('state', `人物状态：${state.name}`,
+      `【人物状态】${state.name}：最近事件「${state.lastEvent}」${state.lastTime ? `（${state.lastTime}）` : ''}${state.lastLocation ? `@${state.lastLocation}` : ''}；累计参与 ${state.eventCount} 个事件。此后未再出场，不要让其知晓之后发生的事。`, 92)),
     ...(volume ? [make('volume', `所属卷：${volume.title}`, `【所属卷】${volume.title}\n卷摘要：${volume.summary || '尚未填写'}`, 88)] : []),
     ...plotlines.map((row) => make('plotline', `剧情线：${row.name}`, `【剧情线/${row.status}】${row.name}（${row.type}）：${row.summary}`, 78)),
     ...facts.map(({ row, matched }) => make('fact', `事实：${row.subject}`, `【事实/${row.canon_status}】${row.subject}｜${row.predicate}｜${row.value}${row.evidence ? `\n证据：${row.evidence}` : ''}`, row.canon_status === 'canon' ? 82 : 58, Number(row.importance) / 10 + (matched ? 25 : 0))),

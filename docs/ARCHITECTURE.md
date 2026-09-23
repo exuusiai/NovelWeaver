@@ -28,13 +28,16 @@ SQLite + FTS5      OpenAI-compatible API (optional)
 
 ## 后端模块
 
-- `server/db.ts`：数据库初始化、演示数据和最小数据访问层。
+- `server/index.ts`：应用装配、路由挂载、静态资源与生产入口；路由实现位于 `server/routes/`。
+- `server/routes/`：按域拆分的路由——`projects`（项目/模型/审查/导出/备份）、`chapters`（章节/卷/历史/预检/摘要重写）、`world`（实体/事实/关系）、`story`（大纲/拆分/剧情线/事件/伏笔）、`ingest`（导入/分析任务）、`generate`（AI 上下文与流式生成），共享逻辑在 `helpers`，任务调度在 `analysis-service`。
+- `server/db.ts`：数据库初始化、演示数据和最小数据访问层（`NOVELWEAVER_DATA_DIR=:memory:` 用于测试）。
 - `server/importer.ts`：文件解析、EPUB spine 排序、目录去重、空章过滤、版式整理、章节切分、分块与摘要。
 - `server/analyzer.ts`：模型结构化抽取、实体别名合并、事件、关系与剧情线分析。
-- `server/memory.ts`：项目内检索与任务上下文组装。
+- `server/memory.ts`：项目内检索、人物状态推演与任务上下文组装。
 - `server/ai.ts`：本地规则引擎和远程模型网关。
-- `server/review.ts`：可解释的连续性规则检查。
-- `server/index.ts`：HTTP API、验证、事务与生产静态资源。
+- `server/review.ts`：可解释的连续性规则检查与单章生成前预检。
+- `server/exporter.ts`：TXT / Markdown / DOCX / EPUB 稿件构建。
+- `server/backup.ts` + `server/project-export.ts`：全量快照、保留策略与调度。
 
 ## 关键数据对象
 

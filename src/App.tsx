@@ -1,19 +1,26 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { Loader2 } from 'lucide-react'
 import { ProjectProvider } from './project-context'
 import { AppShell } from './components/AppShell'
-import { Dashboard } from './pages/Dashboard'
-import { WritingStudio } from './pages/WritingStudio'
-import { PlotBoard } from './pages/PlotBoard'
-import { WorldBible } from './pages/WorldBible'
-import { MemoryLab } from './pages/MemoryLab'
-import { ReviewCenter } from './pages/ReviewCenter'
-import { SettingsPage } from './pages/SettingsPage'
-import { AnalysisCenter } from './pages/AnalysisCenter'
+
+const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })))
+const WritingStudio = lazy(() => import('./pages/WritingStudio').then((m) => ({ default: m.WritingStudio })))
+const PlotBoard = lazy(() => import('./pages/PlotBoard').then((m) => ({ default: m.PlotBoard })))
+const WorldBible = lazy(() => import('./pages/WorldBible').then((m) => ({ default: m.WorldBible })))
+const MemoryLab = lazy(() => import('./pages/MemoryLab').then((m) => ({ default: m.MemoryLab })))
+const ReviewCenter = lazy(() => import('./pages/ReviewCenter').then((m) => ({ default: m.ReviewCenter })))
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const AnalysisCenter = lazy(() => import('./pages/AnalysisCenter').then((m) => ({ default: m.AnalysisCenter })))
+
+function RouteLoading() {
+  return <div className="route-loading"><Loader2 className="spin" size={22} /><span>正在加载页面…</span></div>
+}
 
 export default function App() {
   return <BrowserRouter><ProjectProvider><Routes><Route element={<AppShell />}>
-    <Route index element={<Dashboard />} /><Route path="write" element={<WritingStudio />} /><Route path="plot" element={<PlotBoard />} />
-    <Route path="bible" element={<WorldBible />} /><Route path="graph" element={<Navigate to="/bible" replace />} /><Route path="memory" element={<MemoryLab />} />
-    <Route path="analysis" element={<AnalysisCenter />} /><Route path="review" element={<ReviewCenter />} /><Route path="settings" element={<SettingsPage />} />
+    <Route index element={<Suspense fallback={<RouteLoading />}><Dashboard /></Suspense>} /><Route path="write" element={<Suspense fallback={<RouteLoading />}><WritingStudio /></Suspense>} /><Route path="plot" element={<Suspense fallback={<RouteLoading />}><PlotBoard /></Suspense>} />
+    <Route path="bible" element={<Suspense fallback={<RouteLoading />}><WorldBible /></Suspense>} /><Route path="graph" element={<Navigate to="/bible" replace />} /><Route path="memory" element={<Suspense fallback={<RouteLoading />}><MemoryLab /></Suspense>} />
+    <Route path="analysis" element={<Suspense fallback={<RouteLoading />}><AnalysisCenter /></Suspense>} /><Route path="review" element={<Suspense fallback={<RouteLoading />}><ReviewCenter /></Suspense>} /><Route path="settings" element={<Suspense fallback={<RouteLoading />}><SettingsPage /></Suspense>} />
   </Route></Routes></ProjectProvider></BrowserRouter>
 }

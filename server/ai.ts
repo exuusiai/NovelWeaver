@@ -3,6 +3,15 @@ import type { ModelRequest, RuntimeModelConfig } from './types.ts'
 import { assembleContext } from './memory.ts'
 import { sql } from './db.ts'
 
+type ChatMessage = { role: 'system' | 'user'; content: string }
+
+function asText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map((part) => typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : '').join('')
+  if (value && typeof value === 'object') return JSON.stringify(value)
+  return ''
+}
+
 export function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '')
 }
@@ -48,7 +57,13 @@ export function setRuntimeConfig(next: Partial<RuntimeModelConfig>) {
   return getModelStatus()
 }
 
-async function chatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>, temperature = 0.2, json = false, options: { maxTokens?: number; disableThinking?: boolean; timeoutMs?: number } = {}) {
+export interface ModelUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+}
+
+async function chatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>, temperature = 0.2, json = false, options: { maxTokens?: number; disableThinking?: boolean; timeoutMs?: number } = {}): Promise<{ text: string; usage?: ModelUsage }> {
   if (!runtimeConfig.apiKey) throw Object.assign(new Error('当前未配置模型 API。请先在设置页填写 API Key。'), { code: 'MODEL_REQUIRED' })
   const request = (strictJson: boolean, disableThinking: boolean) => fetch(`${runtimeConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -92,18 +107,14 @@ async function chatCompletion(messages: Array<{ role: 'system' | 'user'; content
       text?: string
       message?: { content?: unknown; reasoning_content?: unknown }
     }>
+    usage?: ModelUsage
   }
   const choice = data.choices?.[0]
-  const asText = (value: unknown): string => {
-    if (typeof value === 'string') return value
-    if (Array.isArray(value)) return value.map((part) => typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : '').join('')
-    if (value && typeof value === 'object') return JSON.stringify(value)
-    return ''
-  }
   const content = asText(choice?.message?.content) || asText(choice?.text)
   const reasoning = asText(choice?.message?.reasoning_content)
-  if (content.trim()) return content
-  if (json && reasoning.includes('{')) return reasoning
+  const usage = data.usage && (data.usage.total_tokens || data.usage.prompt_tokens) ? data.usage : undefined
+  if (content.trim()) return { text: content, usage }
+  if (json && reasoning.includes('{')) return { text: reasoning, usage }
   if (json && /length|max[_\s-]?tokens/i.test(choice?.finish_reason || '')) {
     throw Object.assign(new Error('模型输出达到长度上限，且没有生成最终结构化正文。'), { code: 'MODEL_OUTPUT_TRUNCATED' })
   }
@@ -111,7 +122,17 @@ async function chatCompletion(messages: Array<{ role: 'system' | 'user'; content
 }
 
 export async function structuredCompletion(system: string, prompt: string) {
-  return chatCompletion([{ role: 'system', content: system }, { role: 'user', content: prompt }], 0.1, true)
+  return (await chatCompletion([{ role: 'system', content: system }, { role: 'user', content: prompt }], 0.1, true)).text
+}
+
+// One-shot chapter summary rewrite. Pure model call — the caller owns all database updates.
+export async function summarizeWithModel(title: string, content: string) {
+  const { text: output } = await chatCompletion([
+    { role: 'system', content: '你是严谨的中文小说编辑。为章节写一段摘要：一两句话（不超过 90 字），必须包含本章的信息增量与人物/局势的状态变化，只陈述正文中明确发生的事，不评价、不剧透后文、不使用形容词堆砌。只输出摘要文本本身。' },
+    { role: 'user', content: `章节标题：${title}\n\n章节正文：\n${content.slice(0, 12000)}` },
+  ], 0.3, false, { disableThinking: true, maxTokens: 500 })
+  const summary = output.trim().replace(/^["“]|["”]$/g, '').split('\n').filter(Boolean).pop() || output.trim()
+  return summary.slice(0, 200)
 }
 
 export async function probeModel() {
@@ -129,12 +150,12 @@ export async function probeModel() {
       return { ...getModelStatus(), ok: true, latencyMs: networkLatencyMs, networkLatencyMs, probeType: 'gateway', response: 'gateway-ok' }
     }
     if (transport && [401, 403].includes(transport.status)) throw new Error(`模型连接失败（HTTP ${transport.status}）：API Key 无效、已过期或没有访问权限。`)
-    const output = await chatCompletion([
+    const probe = await chatCompletion([
       { role: 'system', content: 'Return only the word OK.' },
       { role: 'user', content: 'Connection test.' },
     ], 0, false, { maxTokens: 2, disableThinking: true, timeoutMs: 10000 })
     verifiedAt = new Date().toISOString(); lastProbeError = ''
-    return { ...getModelStatus(), ok: Boolean(output.trim()), latencyMs: Date.now() - started, probeType: 'minimal-generation', response: output.trim().slice(0, 20) }
+    return { ...getModelStatus(), ok: Boolean(probe.text.trim()), latencyMs: Date.now() - started, probeType: 'minimal-generation', response: probe.text.trim().slice(0, 20) }
   } catch (error) {
     lastProbeError = (error as Error).message
     throw Object.assign(error as Error, { status: 502 })
@@ -157,24 +178,110 @@ function localResponse(request: ModelRequest, context: string) {
   return `我已读取《${base.name}》的项目记忆。当前处于本地规则模式，可以执行结构化操作、检索原文、维护设定和生成基础候选。\n\n你的请求是：${request.prompt}\n\n相关上下文已找到 ${context.length} 个字符。配置模型 API 后，我会基于同一上下文快照返回完整推演结果。`
 }
 
+function recordGeneration(request: ModelRequest, assembledText: string, output: string, model: string, usage?: ModelUsage) {
+  const generationId = sql.id()
+  sql.run(`INSERT INTO generations (id, project_id, task_type, input, context_snapshot, output, model, created_at, usage, used)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, -1)`, generationId, request.projectId, request.task,
+    request.prompt, assembledText, output, model, sql.now(), usage ? JSON.stringify(usage) : '')
+  return generationId
+}
+
 export async function generate(request: ModelRequest) {
   const assembled = assembleContext(request.projectId, request.prompt, request.chapterId)
   let output: string
   let model = 'local-rules-v1'
+  let usage: ModelUsage | undefined
   if (runtimeConfig.apiKey) {
     const formatInstruction = request.task === 'analysis'
       ? '以结构清晰的 Markdown 笔记作答：使用标题、要点列表和必要的表格；先给结论，再列原文证据与不确定项。不要用 JSON，不要输出思考过程。'
       : '使用清晰的 Markdown 输出，不要输出思考过程。'
-    output = await chatCompletion([
+    const completion = await chatCompletion([
       { role: 'system', content: `你是小说创作工作台中的主动型叙事策划助手。只使用给定项目上下文，不得把推测写成正史；事实结论需引用[R编号]；输出中文。不要默认作品有唯一主角、固定主线或三幕式：先判断它属于单核推进、群像交织、单元串联、主线转移、多中心拼图或探索式结构，再给适配方案。用户信息不足时应给出可直接修改的合理候选，并把关键假设单列出来，而不是只反问用户。${formatInstruction}` },
       { role: 'user', content: `${assembled.text}\n\n【任务类型】${request.task}\n【用户要求】${request.prompt}` },
     ], request.task === 'analysis' ? 0.2 : 0.75, false, { disableThinking: true })
+    output = completion.text
+    usage = completion.usage
     if (!output) output = '模型未返回内容。'
     model = runtimeConfig.model
   } else {
     output = localResponse(request, assembled.text)
   }
-  sql.run(`INSERT INTO generations VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, sql.id(), request.projectId, request.task,
-    request.prompt, assembled.text, output, model, sql.now())
-  return { output, model, citations: assembled.hits, contextReport: assembled.report }
+  const generationId = recordGeneration(request, assembled.text, output, model, usage)
+  return { generationId, output, model, citations: assembled.hits, contextReport: assembled.report }
+}
+
+async function* streamChatCompletion(messages: ChatMessage[], temperature: number): AsyncGenerator<string> {
+  if (!runtimeConfig.apiKey) throw Object.assign(new Error('当前未配置模型 API。请先在设置页填写 API Key。'), { code: 'MODEL_REQUIRED' })
+  const response = await fetch(`${runtimeConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtimeConfig.apiKey}` },
+    signal: AbortSignal.timeout(300000),
+    body: JSON.stringify({ model: runtimeConfig.model, temperature, stream: true, messages }),
+  })
+  if (!response.ok || !response.body) {
+    const rawError = await response.text().catch(() => '')
+    let message = rawError
+    try { message = (JSON.parse(rawError) as { error?: { message?: string } }).error?.message || rawError } catch { /* keep provider text */ }
+    throw new Error(`模型连接失败（HTTP ${response.status}）：${message}`)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) return
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) continue
+      const payload = trimmed.slice(5).trim()
+      if (payload === '[DONE]') return
+      try {
+        const parsed = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: unknown } }> }
+        const text = asText(parsed.choices?.[0]?.delta?.content)
+        if (text) yield text
+      } catch { /* keepalive or malformed line */ }
+    }
+  }
+}
+
+export type GenerateStreamEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'done'; generationId: string; output: string; model: string; citations: ReturnType<typeof assembleContext>['hits']; contextReport: ReturnType<typeof assembleContext>['report'] }
+  | { type: 'error'; message: string }
+
+export async function* generateStream(request: ModelRequest): AsyncGenerator<GenerateStreamEvent> {
+  const assembled = assembleContext(request.projectId, request.prompt, request.chapterId)
+  let output = ''
+  let model = 'local-rules-v1'
+  if (runtimeConfig.apiKey) {
+    const formatInstruction = request.task === 'analysis'
+      ? '以结构清晰的 Markdown 笔记作答：使用标题、要点列表和必要的表格；先给结论，再列原文证据与不确定项。不要用 JSON，不要输出思考过程。'
+      : '使用清晰的 Markdown 输出，不要输出思考过程。'
+    const messages: ChatMessage[] = [
+      { role: 'system', content: `你是小说创作工作台中的主动型叙事策划助手。只使用给定项目上下文，不得把推测写成正史；事实结论需引用[R编号]；输出中文。不要默认作品有唯一主角、固定主线或三幕式：先判断它属于单核推进、群像交织、单元串联、主线转移、多中心拼图或探索式结构，再给适配方案。用户信息不足时应给出可直接修改的合理候选，并把关键假设单列出来，而不是只反问用户。${formatInstruction}` },
+      { role: 'user', content: `${assembled.text}\n\n【任务类型】${request.task}\n【用户要求】${request.prompt}` },
+    ]
+    try {
+      for await (const text of streamChatCompletion(messages, request.task === 'analysis' ? 0.2 : 0.75)) {
+        output += text
+        yield { type: 'delta', text }
+      }
+    } catch (error) {
+      yield { type: 'error', message: (error as Error).message }
+      return
+    }
+    model = runtimeConfig.model
+    if (!output.trim()) {
+      yield { type: 'error', message: '模型未返回内容。请重试或更换模型。' }
+      return
+    }
+  } else {
+    output = localResponse(request, assembled.text)
+    yield { type: 'delta', text: output }
+  }
+  const generationId = recordGeneration(request, assembled.text, output, model)
+  yield { type: 'done', generationId, output, model, citations: assembled.hits, contextReport: assembled.report }
 }

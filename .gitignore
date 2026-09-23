@@ -6,3 +6,4 @@ dist/
 *.log
 coverage/
 测试用文稿/
+eval/.api-test.local.json

@@ -6,10 +6,10 @@ import { randomUUID } from 'node:crypto'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
-const dataDir = path.join(root, '.data')
-fs.mkdirSync(dataDir, { recursive: true })
+const dataDir = process.env.NOVELWEAVER_DATA_DIR || path.join(root, '.data')
+if (dataDir !== ':memory:') fs.mkdirSync(dataDir, { recursive: true })
 
-export const db = new Database(path.join(dataDir, 'novelweaver.db'))
+export const db = new Database(dataDir === ':memory:' ? ':memory:' : path.join(dataDir, 'novelweaver.db'))
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS chapter_marks (
   importance TEXT NOT NULL DEFAULT 'normal',
   note TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chapter_history (
+  id TEXT PRIMARY KEY, chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
+  word_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chapter_outlines (
   chapter_id TEXT PRIMARY KEY REFERENCES chapters(id) ON DELETE CASCADE,
@@ -146,6 +152,7 @@ CREATE TABLE IF NOT EXISTS import_previews (
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_chapters_project ON chapters(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_chapter_marks_project ON chapter_marks(project_id, bookmarked, importance);
+CREATE INDEX IF NOT EXISTS idx_chapter_history_chapter ON chapter_history(chapter_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chapter_outlines_project ON chapter_outlines(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_volumes_project ON volumes(project_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_volume_bindings ON chapter_volume_bindings(volume_id, order_index);
@@ -267,6 +274,14 @@ function seedDemo() {
 }
 
 seedDemo()
+
+// Lightweight column migrations for databases created before these fields existed.
+for (const statement of [
+  "ALTER TABLE generations ADD COLUMN usage TEXT NOT NULL DEFAULT ''",
+  'ALTER TABLE generations ADD COLUMN used INTEGER NOT NULL DEFAULT -1',
+]) {
+  try { db.exec(statement) } catch { /* column already exists */ }
+}
 
 function ensureVolumeStructure() {
   const stamp = now()

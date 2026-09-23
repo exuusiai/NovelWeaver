@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Bookmark, BookmarkCheck, BookOpen, Check, ChevronDown, ChevronRight, Eye, FilePlus2, Filter, FolderPlus, ListTree, Loader2, PanelRightClose, Pencil, Pin, PinOff, Save, Sparkles, Target, Trash2, WandSparkles } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Bookmark, BookmarkCheck, BookOpen, Check, ChevronDown, ChevronRight, Eye, FilePlus2, Filter, FolderPlus, History, ListTree, Loader2, PanelRightClose, Pencil, Pin, PinOff, RotateCcw, Save, ShieldAlert, Sparkles, Target, Trash2, WandSparkles } from 'lucide-react'
 import { api, patch, post, remove } from '../api'
 import { useProject } from '../project-context'
-import type { Chapter, ContextReport, GenerationResult, Volume } from '../types'
+import type { Chapter, ChapterHistory, ContextReport, GenerationResult, PrecheckIssue, Volume } from '../types'
 import { Badge, Button, EmptyState, Field, IconButton, Input, MarkdownLike, Modal, Textarea } from '../components/ui'
+
+const snapshotOf = (chapter: Chapter) => JSON.stringify([chapter.title, chapter.content, chapter.summary, chapter.pov, chapter.status, chapter.target_words])
+const cleanGeneratedProse = (output: string) => output
+  .replace(/^#.*\n/, '')
+  .replace(/\s*\[R\d+\]/g, '')
+  .replace(/[ \t]{2,}/g, ' ')
+const variantLabel = (index: number) => `版本 ${String.fromCharCode(65 + index)}`
 
 export function WritingStudio() {
   const { projectId } = useProject()
@@ -13,12 +20,18 @@ export function WritingStudio() {
   const [draft, setDraft] = useState<Chapter | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [autosave, setAutosave] = useState<'saved' | 'pending' | 'saving' | 'error'>('saved')
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem('novelweaver.agent.open') !== '0' && window.innerWidth > 640)
   const [panelPinned, setPanelPinned] = useState(() => localStorage.getItem('novelweaver.agent.pinned') !== '0' && window.innerWidth > 860)
   const [prompt, setPrompt] = useState('根据当前细纲，生成下一场景；保持视角和既有设定，不新增未经确认的能力。')
   const [task, setTask] = useState<'chapter_outline' | 'prose'>('chapter_outline')
   const [generating, setGenerating] = useState(false)
-  const [result, setResult] = useState<GenerationResult | null>(null)
+  const [generateError, setGenerateError] = useState('')
+  const [variants, setVariants] = useState<GenerationResult[]>([])
+  const [activeVariant, setActiveVariant] = useState(0)
+  const [precheckIssues, setPrecheckIssues] = useState<PrecheckIssue[] | null>(null)
+  const [summarizing, setSummarizing] = useState(false)
+  const [summaryNotice, setSummaryNotice] = useState('')
   const [bookmarkedOnly, setBookmarkedOnly] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [volumeOpen, setVolumeOpen] = useState(false)
@@ -30,30 +43,98 @@ export function WritingStudio() {
   const [workshopStage, setWorkshopStage] = useState('scan')
   const [outlineExpanded, setOutlineExpanded] = useState(true)
   const [outlineEditing, setOutlineEditing] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyRows, setHistoryRows] = useState<ChapterHistory[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  const draftRef = useRef<Chapter | null>(null)
+  const savedSnapshotRef = useRef('')
+  const errorSnapshotRef = useRef('')
+  const savingRef = useRef(false)
+
+  const applyDraft = (row: Chapter) => {
+    draftRef.current = row
+    savedSnapshotRef.current = snapshotOf(row)
+    errorSnapshotRef.current = ''
+    setAutosave('saved')
+    setDraft(row)
+  }
+  const discardDraft = () => { draftRef.current = null; savedSnapshotRef.current = ''; errorSnapshotRef.current = ''; setDraft(null) }
 
   const load = async (preferredId = selectedId) => {
     const [rows, volumeRows] = await Promise.all([api<Chapter[]>(`/api/projects/${projectId}/chapters`), api<Volume[]>(`/api/projects/${projectId}/volumes`)])
+    if (draftRef.current && snapshotOf(draftRef.current) !== savedSnapshotRef.current) void save()
     setVolumes(volumeRows)
     setChapters(rows)
     const id = rows.some((row) => row.id === preferredId) ? preferredId : rows[0]?.id || ''
-    setSelectedId(id); setDraft(rows.find((row) => row.id === id) || null)
+    setSelectedId(id)
+    const row = rows.find((item) => item.id === id) || null
+    if (row) applyDraft(row); else discardDraft()
   }
   useEffect(() => { load() }, [projectId])
-  useEffect(() => { const row = chapters.find((item) => item.id === selectedId); if (row) { setDraft(row); setOutlineEditing(false); sessionStorage.setItem('novelweaver.chapter', row.id) } }, [selectedId])
+  useEffect(() => { draftRef.current = draft }, [draft])
+  useEffect(() => {
+    const row = chapters.find((item) => item.id === selectedId)
+    if (row) {
+      if (draftRef.current && snapshotOf(draftRef.current) !== savedSnapshotRef.current) void save()
+      applyDraft(row)
+      setOutlineEditing(false)
+      sessionStorage.setItem('novelweaver.chapter', row.id)
+    }
+  }, [selectedId])
   useEffect(() => { localStorage.setItem('novelweaver.agent.open', panelOpen ? '1' : '0') }, [panelOpen])
   useEffect(() => { localStorage.setItem('novelweaver.agent.pinned', panelPinned ? '1' : '0') }, [panelPinned])
-  useEffect(() => { setContextReport(null) }, [prompt, task, draft?.id])
+  useEffect(() => { setContextReport(null); setPrecheckIssues(null) }, [prompt, task, draft?.id])
+  useEffect(() => {
+    const handler = (event: BeforeUnloadEvent) => {
+      if (draftRef.current && snapshotOf(draftRef.current) !== savedSnapshotRef.current) { event.preventDefault(); event.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
 
   const wordCount = useMemo(() => draft?.content.replace(/\s/g, '').length ?? 0, [draft?.content])
   const visibleChapters = useMemo(() => bookmarkedOnly ? chapters.filter((chapter) => Boolean(chapter.bookmarked)) : chapters, [chapters, bookmarkedOnly])
   const volumeGroups = useMemo(() => volumes.map((volume) => ({ volume, chapters: visibleChapters.filter((chapter) => chapter.volume_id === volume.id).sort((a, b) => (a.volume_order_index ?? a.position) - (b.volume_order_index ?? b.position)) })), [volumes, visibleChapters])
+
   const save = async () => {
-    if (!draft) return
-    setSaving(true); setSaved(false)
-    const next = await patch<Chapter>(`/api/chapters/${draft.id}`, { title: draft.title, content: draft.content, summary: draft.summary, pov: draft.pov, status: draft.status, targetWords: draft.target_words })
-    setChapters((rows) => rows.map((row) => row.id === next.id ? next : row)); setDraft(next); setSaving(false); setSaved(true)
-    window.setTimeout(() => setSaved(false), 1800)
+    const current = draftRef.current
+    if (!current || savingRef.current) return false
+    savingRef.current = true
+    setSaving(true); setSaved(false); setAutosave('saving')
+    const payload = { title: current.title, content: current.content, summary: current.summary, pov: current.pov, status: current.status, targetWords: current.target_words }
+    const snapshot = JSON.stringify(payload)
+    const previousSnapshot = savedSnapshotRef.current
+    savedSnapshotRef.current = snapshot
+    try {
+      const next = await patch<Chapter>(`/api/chapters/${current.id}`, payload)
+      setChapters((rows) => rows.map((row) => row.id === next.id ? next : row))
+      // 请求期间用户可能继续输入；只有正文仍等于已保存快照时才合并服务端字段
+      setDraft((row) => row && row.id === next.id && snapshotOf(row) === snapshot ? { ...row, ...next } : row)
+      errorSnapshotRef.current = ''
+      setSaved(true); setAutosave('saved')
+      window.setTimeout(() => setSaved(false), 1800)
+      return true
+    } catch {
+      savedSnapshotRef.current = previousSnapshot
+      errorSnapshotRef.current = snapshot
+      setAutosave('error')
+      return false
+    } finally {
+      savingRef.current = false; setSaving(false)
+    }
   }
+
+  useEffect(() => {
+    if (!draft) return
+    const snapshot = snapshotOf(draft)
+    if (snapshot === savedSnapshotRef.current) { setAutosave('saved'); return }
+    if (snapshot === errorSnapshotRef.current) { setAutosave('error'); return }
+    setAutosave('pending')
+    const timer = window.setTimeout(() => { void save() }, 2500)
+    return () => window.clearTimeout(timer)
+  }, [draft])
+
   const saveDetailedOutline = async () => {
     if (!draft) return
     const next = await patch<Chapter>(`/api/chapters/${draft.id}/outline`, { content: draft.detailed_outline, status: 'active' })
@@ -95,13 +176,72 @@ export function WritingStudio() {
   }
   const generate = async () => {
     if (!draft) return
-    setGenerating(true)
-    try { setResult(await post<GenerationResult>('/api/ai/generate', { projectId, chapterId: draft.id, task, prompt })) } finally { setGenerating(false) }
+    const slot = variants.length
+    if (slot >= 3) { setGenerateError('最多保留 3 个对比版本；请先丢弃不需要的版本。'); return }
+    setGenerating(true); setGenerateError('')
+    setVariants((current) => [...current, { output: '', model: '', citations: [] }])
+    setActiveVariant(slot)
+    try {
+      const response = await fetch('/api/ai/generate/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, chapterId: draft.id, task, prompt }),
+      })
+      if (!response.ok || !response.body) {
+        const detail = await response.json().catch(() => null) as { error?: string } | null
+        throw new Error(detail?.error || `请求失败：${response.status}`)
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finished = false
+      while (!finished) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          let event: { type: string; text?: string; generationId?: string; output?: string; model?: string; citations?: GenerationResult['citations']; contextReport?: GenerationResult['contextReport']; message?: string }
+          try { event = JSON.parse(line.slice(6)) } catch { continue }
+          if (event.type === 'delta' && event.text) {
+            const text = event.text
+            setVariants((current) => current.map((item, index) => index === slot ? { ...item, output: item.output + text } : item))
+          } else if (event.type === 'done') {
+            setVariants((current) => current.map((item, index) => index === slot ? { generationId: event.generationId, output: event.output || '', model: event.model || '', citations: event.citations || [], contextReport: event.contextReport } : item))
+            finished = true
+          } else if (event.type === 'error') throw new Error(event.message || '生成失败。')
+        }
+      }
+    } catch (error) {
+      setVariants((current) => current.filter((item, index) => !(index === slot && !item.output.trim())))
+      setActiveVariant((current) => Math.min(current, Math.max(variants.length - 1, 0)))
+      setGenerateError((error as Error).message)
+    } finally {
+      setGenerating(false)
+    }
   }
   const previewContext = async () => {
     if (!draft) return
     setPreviewing(true)
-    try { const response = await post<{ report: ContextReport }>('/api/ai/context', { projectId, chapterId: draft.id, prompt, tokenBudget: 10000 }); setContextReport(response.report) } finally { setPreviewing(false) }
+    try {
+      const [context, precheck] = await Promise.all([
+        post<{ report: ContextReport }>('/api/ai/context', { projectId, chapterId: draft.id, prompt, tokenBudget: 10000 }),
+        api<{ issues: PrecheckIssue[] }>(`/api/chapters/${draft.id}/precheck`).catch(() => ({ issues: [] as PrecheckIssue[] })),
+      ])
+      setContextReport(context.report); setPrecheckIssues(precheck.issues)
+    } finally { setPreviewing(false) }
+  }
+  const rewriteSummary = async () => {
+    if (!draft) return
+    setSummarizing(true); setSummaryNotice('')
+    try {
+      const next = await post<Chapter>(`/api/chapters/${draft.id}/summary/rewrite`, {})
+      setChapters((rows) => rows.map((row) => row.id === next.id ? next : row))
+      applyDraft(next)
+      setSummaryNotice('摘要已由模型重写，章节记忆同步更新。')
+    } catch (error) { setSummaryNotice((error as Error).message) } finally { setSummarizing(false) }
   }
   const workshopPrompts: Record<string, string> = {
     scan: '扫描当前章节前的故事状态，列出本章必须承接的事实、未解决承诺和角色知识边界。',
@@ -111,9 +251,30 @@ export function WritingStudio() {
     check: '检查细纲中的持有物、角色知识、时间地点、力量规则和正史事实冲突，并给出一次修订建议。',
   }
   const chooseStage = (stage: string) => { setWorkshopStage(stage); setPrompt(workshopPrompts[stage]) }
+  const currentResult = variants[activeVariant] || null
+  const sendFeedback = (generationId: string | undefined, action: 'appended' | 'discarded') => {
+    if (generationId) void post(`/api/generations/${generationId}/feedback`, { action }).catch(() => undefined)
+  }
   const appendResult = () => {
-    if (!draft || !result) return
-    setDraft({ ...draft, content: `${draft.content}${draft.content ? '\n\n' : ''}${result.output.replace(/^#.*\n/, '')}` })
+    if (!draft || !currentResult?.output.trim()) return
+    setDraft({ ...draft, content: `${draft.content}${draft.content ? '\n\n' : ''}${cleanGeneratedProse(currentResult.output)}` })
+    sendFeedback(currentResult.generationId, 'appended')
+  }
+  const discardVariants = () => {
+    variants.forEach((item) => sendFeedback(item.generationId, 'discarded'))
+    setVariants([]); setActiveVariant(0)
+  }
+  const openHistory = async () => {
+    if (!draft) return
+    setHistoryOpen(true); setHistoryLoading(true)
+    try { setHistoryRows(await api<ChapterHistory[]>(`/api/chapters/${draft.id}/history`)) } finally { setHistoryLoading(false) }
+  }
+  const restoreHistory = async (historyId: string) => {
+    if (!draft) return
+    const next = await post<Chapter>(`/api/chapters/${draft.id}/history/${historyId}/restore`, {})
+    setChapters((rows) => rows.map((row) => row.id === next.id ? next : row))
+    applyDraft(next)
+    setHistoryOpen(false)
   }
 
   if (!chapters.length) return <EmptyState icon={<BookOpen />} title="还没有章节" text="创建第一章后即可开始写作。" action={<Button onClick={addChapter}>创建第一章</Button>} />
@@ -124,22 +285,29 @@ export function WritingStudio() {
     </aside>
     <section className="editor-pane">
       {draft && <>
-        <header className="editor-toolbar"><div className="crumb">正文 <ChevronRight size={14} /> <span>{draft.title}</span></div><div className="editor-actions"><Badge tone={draft.status === 'revised' ? 'teal' : 'neutral'}>{draft.status === 'revised' ? '已修订' : '草稿'}</Badge><span className="save-state">{saved && <><Check size={14} /> 已保存</>}</span><IconButton label={draft.bookmarked ? '取消书签' : '添加书签'} className={draft.bookmarked ? 'active' : ''} onClick={() => updateMark({ bookmarked: !draft.bookmarked })}>{draft.bookmarked ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}</IconButton><Button variant="secondary" onClick={save} disabled={saving}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />} 保存</Button><IconButton label="删除当前章节" className="danger-icon" onClick={() => setDeleteOpen(true)}><Trash2 size={17} /></IconButton></div></header>
-        <div className="editor-meta"><Input className="chapter-title-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /><div className="chapter-facts"><label><span>所属卷</span><select className="input" value={draft.volume_id || ''} onChange={(event) => moveChapter(event.target.value)}>{volumes.map((volume) => <option key={volume.id} value={volume.id}>{volume.title}</option>)}</select></label><label><span>视角</span><Input value={draft.pov} onChange={(event) => setDraft({ ...draft, pov: event.target.value })} placeholder="未指定" /></label><label><span>目标</span><div><Target size={14} /><Input type="number" value={draft.target_words} onChange={(event) => setDraft({ ...draft, target_words: Number(event.target.value) })} /></div></label><label><span>重要性</span><select className="input importance-select" value={draft.importance} onChange={(event) => updateMark({ importance: event.target.value as Chapter['importance'] })}><option value="normal">普通</option><option value="important">重要</option><option value="critical">关键</option></select></label><span>{wordCount.toLocaleString()} 字</span></div><Textarea className="summary-input" value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} placeholder="用一两句话记录本章的信息增量和状态变化……" rows={2} /></div>
+        <header className="editor-toolbar"><div className="crumb">正文 <ChevronRight size={14} /> <span>{draft.title}</span></div><div className="editor-actions"><Badge tone={draft.status === 'revised' ? 'teal' : 'neutral'}>{draft.status === 'revised' ? '已修订' : '草稿'}</Badge><span className="save-state">{saved && <><Check size={14} /> 已保存</>}</span><IconButton label="历史版本" onClick={openHistory}><History size={17} /></IconButton><IconButton label={draft.bookmarked ? '取消书签' : '添加书签'} className={draft.bookmarked ? 'active' : ''} onClick={() => updateMark({ bookmarked: !draft.bookmarked })}>{draft.bookmarked ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}</IconButton><Button variant="secondary" onClick={save} disabled={saving}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />} 保存</Button><IconButton label="删除当前章节" className="danger-icon" onClick={() => setDeleteOpen(true)}><Trash2 size={17} /></IconButton></div></header>
+        <div className="editor-meta"><Input className="chapter-title-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /><div className="chapter-facts"><label><span>所属卷</span><select className="input" value={draft.volume_id || ''} onChange={(event) => moveChapter(event.target.value)}>{volumes.map((volume) => <option key={volume.id} value={volume.id}>{volume.title}</option>)}</select></label><label><span>视角</span><Input value={draft.pov} onChange={(event) => setDraft({ ...draft, pov: event.target.value })} placeholder="未指定" /></label><label><span>目标</span><div><Target size={14} /><Input type="number" value={draft.target_words} onChange={(event) => setDraft({ ...draft, target_words: Number(event.target.value) })} /></div></label><label><span>重要性</span><select className="input importance-select" value={draft.importance} onChange={(event) => updateMark({ importance: event.target.value as Chapter['importance'] })}><option value="normal">普通</option><option value="important">重要</option><option value="critical">关键</option></select></label><span>{wordCount.toLocaleString()} 字</span></div><div className="summary-row"><Textarea className="summary-input" value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} placeholder="用一两句话记录本章的信息增量和状态变化……" rows={2} /><Button variant="secondary" className="summary-ai" onClick={rewriteSummary} disabled={summarizing || !draft.content.trim()} title="用模型重写本章摘要">{summarizing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} AI 摘要</Button></div>{summaryNotice && <p className="summary-notice">{summaryNotice}</p>}</div>
         {draft.detailed_outline && <section className={`chapter-outline ${outlineExpanded ? 'expanded' : ''}`}><header><button onClick={() => setOutlineExpanded((value) => !value)}>{outlineExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<ListTree size={15} /><strong>本章细纲</strong><Badge tone="teal">由全书大纲拆分</Badge></button>{outlineExpanded && <Button variant="ghost" onClick={() => setOutlineEditing((value) => !value)}><Pencil size={13} /> {outlineEditing ? '预览' : '编辑'}</Button>}</header>{outlineExpanded && <div>{outlineEditing ? <><Textarea rows={16} value={draft.detailed_outline} onChange={(event) => setDraft({ ...draft, detailed_outline: event.target.value })} /><Button onClick={saveDetailedOutline}><Save size={14} /> 保存细纲</Button></> : <MarkdownLike text={draft.detailed_outline} />}</div>}</section>}
         <Textarea className="manuscript-editor" value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="从一个正在发生的动作开始……" spellCheck={false} />
-        <footer className="editor-footer"><span>目标完成度 {Math.min(Math.round(wordCount / draft.target_words * 100), 100)}%</span><div className="mini-progress"><i style={{ width: `${Math.min(wordCount / draft.target_words * 100, 100)}%` }} /></div><span>自动保存已开启</span></footer>
+        <footer className="editor-footer"><span>目标完成度 {Math.min(Math.round(wordCount / draft.target_words * 100), 100)}%</span><div className="mini-progress"><i style={{ width: `${Math.min(wordCount / draft.target_words * 100, 100)}%` }} /></div><span>{autosave === 'saving' || saving ? '自动保存中…' : autosave === 'pending' ? '有未保存更改' : autosave === 'error' ? '自动保存失败，可手动保存重试' : '已自动保存'}</span></footer>
       </>}
     </section>
     {panelOpen ? <aside className="ai-panel"><header><div><WandSparkles size={18} /><div><strong>创作 Agent</strong><span>{panelPinned ? '已固定在写作区' : '悬浮面板'}</span></div></div><span className="agent-panel-actions"><IconButton label={panelPinned ? '取消固定助手' : '固定助手'} onClick={() => setPanelPinned((value) => !value)}>{panelPinned ? <Pin size={17} /> : <PinOff size={17} />}</IconButton><IconButton label="收起助手" onClick={() => setPanelOpen(false)}><PanelRightClose size={18} /></IconButton></span></header>
       <div className="agent-context"><span>上下文</span><Badge tone="teal">当前章节</Badge><Badge>人物状态</Badge><Badge>活跃剧情线</Badge><Badge>相关原文</Badge></div>
       <div className="agent-tabs"><button className={task === 'chapter_outline' ? 'active' : ''} onClick={() => setTask('chapter_outline')}>章节细纲</button><button className={task === 'prose' ? 'active' : ''} onClick={() => setTask('prose')}>正文草稿</button></div>
       {task === 'chapter_outline' && <div className="workshop-steps">{[['scan', '扫描'], ['motivation', '动机'], ['conflict', '冲突'], ['scenes', '场景'], ['check', '检查']].map(([value, label], index) => <button key={value} className={workshopStage === value ? 'active' : ''} onClick={() => chooseStage(value)}><span>{index + 1}</span>{label}</button>)}</div>}
-      <div className="agent-compose"><Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} /><div className="generation-gate"><Button variant="secondary" onClick={previewContext} disabled={previewing || !prompt.trim()}>{previewing ? <Loader2 className="spin" size={16} /> : <Eye size={16} />} {previewing ? '计算中…' : '预览生成依据'}</Button><Button onClick={generate} disabled={generating || !prompt.trim() || !contextReport}>{generating ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />} {generating ? '正在生成…' : '确认并生成'}</Button></div></div>
+      <div className="agent-compose"><Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} /><div className="generation-gate"><Button variant="secondary" onClick={previewContext} disabled={previewing || !prompt.trim()}>{previewing ? <Loader2 className="spin" size={16} /> : <Eye size={16} />} {previewing ? '计算中…' : '预览生成依据'}</Button><Button onClick={generate} disabled={generating || !prompt.trim() || !contextReport}>{generating ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />} {generating ? '正在生成…' : variants.length ? `再生成一版（${variantLabel(variants.length)}）` : '确认并生成'}</Button></div>{generateError && <p className="generate-error">{generateError}</p>}</div>
+      {precheckIssues && precheckIssues.length > 0 && <div className="precheck-box"><header><ShieldAlert size={14} /><strong>生成前提示（{precheckIssues.length}）</strong></header><ul>{precheckIssues.slice(0, 3).map((issue, index) => <li key={index}><strong>{issue.title}</strong><span>{issue.description}</span></li>)}</ul>{precheckIssues.length > 3 && <small>其余 {precheckIssues.length - 3} 条可在审查中心查看。提示不阻止生成。</small>}</div>}
       {contextReport && <div className="context-preview"><header><strong>本次生成依据</strong><span>{contextReport.estimatedTokens.toLocaleString()} / {contextReport.tokenBudget.toLocaleString()} tokens</span></header><p>已纳入 {contextReport.included.length} 项；因预算裁剪 {contextReport.trimmed.length} 项。</p><div>{contextReport.included.slice(0, 8).map((item) => <span key={`${item.kind}-${item.label}`}>{item.label}</span>)}</div></div>}
-      <div className="agent-result">{result ? <><div className="result-meta"><span>{result.model}</span><span>{result.citations.length} 条记忆证据</span></div><MarkdownLike text={result.output} /><Button variant="secondary" onClick={appendResult}>追加到正文</Button></> : <div className="agent-placeholder"><Sparkles size={22} /><p>生成结果会出现在这里。所有新增事实仍需在审查台确认。</p></div>}</div>
+      <div className="agent-result">{currentResult ? <>
+        {variants.length > 1 && <div className="variant-tabs">{variants.map((item, index) => <button key={index} className={index === activeVariant ? 'active' : ''} onClick={() => setActiveVariant(index)}>{variantLabel(index)}</button>)}<Button variant="ghost" className="variant-clear" onClick={discardVariants} disabled={generating}>丢弃全部</Button></div>}
+        <div className="result-meta"><span>{currentResult.model || (generating ? '正在生成…' : '')}</span><span>{currentResult.citations.length} 条记忆证据</span></div>
+        <MarkdownLike text={currentResult.output || (generating ? '…' : '')} />
+        <Button variant="secondary" onClick={appendResult} disabled={generating || !currentResult.output.trim()}>追加「{variantLabel(activeVariant)}」到正文</Button>
+      </> : <div className="agent-placeholder"><Sparkles size={22} /><p>生成结果会出现在这里。可生成多个版本并排对比，再挑选追加。所有新增事实仍需在审查台确认。</p></div>}</div>
     </aside> : <button className="open-ai-panel" onClick={() => setPanelOpen(true)} title="打开创作 Agent"><Sparkles size={19} /></button>}
     {deleteOpen && draft && <Modal title="删除章节" onClose={() => setDeleteOpen(false)} footer={<><Button variant="ghost" onClick={() => setDeleteOpen(false)}>取消</Button><Button variant="danger" onClick={deleteChapter}><Trash2 size={15} /> 确认删除</Button></>}><div className="delete-confirm"><Trash2 size={24} /><p>将永久删除“<strong>{draft.title}</strong>”及其章节记忆和关联事件。其余章节会自动重新排序。</p></div></Modal>}
+    {historyOpen && draft && <Modal title="历史版本" onClose={() => setHistoryOpen(false)} footer={<Button variant="ghost" onClick={() => setHistoryOpen(false)}>关闭</Button>}><div className="history-list">{historyLoading ? <p className="history-empty"><Loader2 className="spin" size={15} /> 正在读取历史版本…</p> : historyRows.length === 0 ? <p className="history-empty">还没有历史版本。正文发生实际变更并保存后会自动留档，每章最多保留 50 个版本；恢复前会先把当前内容存为新版本。</p> : historyRows.map((item) => <article key={item.id}><div><strong>{item.title}</strong><small>{new Date(item.created_at).toLocaleString()} · {item.word_count.toLocaleString()} 字</small><p>{item.preview}{item.preview.length >= 120 ? '…' : ''}</p></div><Button variant="secondary" onClick={() => restoreHistory(item.id)}><RotateCcw size={14} /> 恢复</Button></article>)}</div></Modal>}
     {volumeOpen && <Modal title="新建分卷" onClose={() => setVolumeOpen(false)} footer={<><Button variant="ghost" onClick={() => setVolumeOpen(false)}>取消</Button><Button onClick={addVolume} disabled={!volumeForm.title.trim()}>创建分卷</Button></>}><div className="form-grid"><Field label="卷名"><Input autoFocus value={volumeForm.title} onChange={(event) => setVolumeForm({ ...volumeForm, title: event.target.value })} placeholder="例如：第一卷 雾港来信" /></Field><Field label="卷摘要"><Textarea rows={5} value={volumeForm.summary} onChange={(event) => setVolumeForm({ ...volumeForm, summary: event.target.value })} placeholder="记录本卷核心目标、状态变化与卷末落点" /></Field></div></Modal>}
     {editingVolume && <Modal title="编辑分卷" onClose={() => setEditingVolume(null)} footer={<>{volumes.length > 1 && <Button variant="danger" onClick={deleteVolume}><Trash2 size={14} /> 删除分卷</Button>}<Button variant="ghost" onClick={() => setEditingVolume(null)}>取消</Button><Button onClick={saveVolume} disabled={!editingVolume.title.trim()}>保存</Button></>}><div className="form-grid"><Field label="卷名"><Input value={editingVolume.title} onChange={(event) => setEditingVolume({ ...editingVolume, title: event.target.value })} /></Field><Field label="卷摘要"><Textarea rows={6} value={editingVolume.summary} onChange={(event) => setEditingVolume({ ...editingVolume, summary: event.target.value })} placeholder="卷摘要会优先进入本卷章节的生成上下文" /></Field></div></Modal>}
   </div>

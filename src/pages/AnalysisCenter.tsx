@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle2, CirclePause, CirclePlay, FlaskConical, Gauge, Loader2, RefreshCw, RotateCcw, SearchCheck } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, CirclePause, CirclePlay, FlaskConical, Gauge, Loader2, RefreshCw, RotateCcw, SearchCheck, Sparkles } from 'lucide-react'
 import { api, post } from '../api'
 import { useProject } from '../project-context'
-import type { AnalysisJob } from '../types'
+import type { AnalysisJob, Chapter } from '../types'
 import { Badge, Button, LoadingState } from '../components/ui'
 
 interface QualityData {
@@ -30,9 +30,22 @@ export function AnalysisCenter() {
   const start = async () => { setBusy(true); setNotice(''); try { await post(`/api/projects/${projectId}/analysis/jobs`, { replaceCandidates: true }); await load() } catch (error) { setNotice((error as Error).message) } finally { setBusy(false) } }
   const secondPass = async () => { setBusy(true); setNotice(''); try { await post(`/api/projects/${projectId}/analysis/second-pass`, {}); await load() } catch (error) { setNotice((error as Error).message) } finally { setBusy(false) } }
   const act = async (job: AnalysisJob, action: 'pause' | 'resume' | 'retry') => { setNotice(''); try { await post(`/api/analysis/jobs/${job.id}/${action}`, {}); await load() } catch (error) { setNotice((error as Error).message) } }
+  const rewriteSummaries = async () => {
+    setNotice('')
+    try {
+      const chapters = (await api<Chapter[]>(`/api/projects/${projectId}/chapters`)).filter((chapter) => chapter.content.replace(/\s/g, '').length >= 40)
+      if (!chapters.length) { setNotice('没有正文足够的章节需要重写摘要。'); return }
+      let done = 0; let failed = 0
+      for (const chapter of chapters) {
+        setNotice(`正在重写章节摘要 ${done + failed + 1}/${chapters.length}：《${chapter.title}》…`)
+        try { await post(`/api/chapters/${chapter.id}/summary/rewrite`, {}); done += 1 } catch { failed += 1 }
+      }
+      setNotice(`摘要重写完成：成功 ${done} 章${failed ? `，失败 ${failed} 章（可再次点击续跑）` : ''}。章节记忆已同步更新。`)
+    } catch (error) { setNotice(`无法读取章节：${(error as Error).message}`) }
+  }
   const latestAudit = quality?.audits[0]
   return <div className="analysis-page">
-    <section className="analysis-hero"><div><span><FlaskConical size={24} /></span><div><h2>文稿分析中心</h2><p>分批执行、断点控制、失败重试与独立质量复核。</p></div></div><div><Button variant="secondary" onClick={secondPass} disabled={busy}><SearchCheck size={15} /> 独立二次分析</Button><Button onClick={start} disabled={busy || jobs.some((job) => ['queued', 'running', 'paused'].includes(job.status))}>{busy ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />} 开始完整分析</Button></div></section>
+    <section className="analysis-hero"><div><span><FlaskConical size={24} /></span><div><h2>文稿分析中心</h2><p>分批执行、断点控制、失败重试与独立质量复核。</p></div></div><div><Button variant="secondary" onClick={rewriteSummaries} disabled={busy}><Sparkles size={15} /> 重写章节摘要</Button><Button variant="secondary" onClick={secondPass} disabled={busy}><SearchCheck size={15} /> 独立二次分析</Button><Button onClick={start} disabled={busy || jobs.some((job) => ['queued', 'running', 'paused'].includes(job.status))}>{busy ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />} 开始完整分析</Button></div></section>
     {notice && <p className="analysis-notice">{notice}</p>}
     {jobs.some((job) => ['queued', 'running'].includes(job.status)) && <LoadingState label="后台任务正在推进；离开本页不会中断" />}
     <section className="quality-grid">
