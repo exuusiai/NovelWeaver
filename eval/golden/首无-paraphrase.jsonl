@@ -1,0 +1,9 @@
+{"query": "井里打捞上来的是家里的哪位小姐", "expectAll": ["妃女子", "井"], "category": "paraphrase", "note": "改述：不出现名字，考语义"}
+{"query": "村子里流传的会把人头拿走的怪物传说", "expectAny": ["淡首大人", "首无"], "category": "paraphrase", "note": "改述：淡首大人/首无传说"}
+{"query": "年老的女用人向小少爷透露了家族的往事", "expectAll": ["铃江", "斧高"], "category": "paraphrase", "note": "改述：铃江告密场景"}
+{"query": "那场只在夜里举行的祭祀仪式的时间线", "expectAll": ["十三夜参礼"], "category": "paraphrase", "note": "改述：核心仪式"}
+{"query": "家里最小的儿子被送去当用人后伺候谁", "expectAll": ["斧高", "长寿郎"], "category": "paraphrase", "note": "改述：主仆关系"}
+{"query": "地方的警察为什么盯上了显赫的大家族", "expectAll": ["高屋敷", "秘守家"], "category": "paraphrase", "note": "改述：调查动机"}
+{"query": "行凶用的那把刀原本放在什么地方", "expectAny": ["柴刀"], "category": "paraphrase", "note": "改述：凶器线索"}
+{"query": "请来的推理作家在最后揭晓了怎样的真相", "expectAll": ["刀城言耶"], "category": "paraphrase", "note": "改述：终章解答"}
+{"query": "喂奶的保姆在雇主家里是什么地位", "expectAll": ["藏田甲子", "秘守家"], "category": "paraphrase", "note": "改述：乳母身份"}
