@@ -57,11 +57,11 @@ function isRelevant(hit: { summary: string; keywords: string; content: string },
   return (query.expectAny ?? []).some((needle) => haystack.includes(needle))
 }
 
-export function runRetrievalEval(projectName: string, goldenPath: string, limit = 16): RetrievalReport {
+export async function runRetrievalEval(projectName: string, goldenPath: string, limit = 16): Promise<RetrievalReport> {
   const project = resolveProject(projectName)
   const golden = loadGolden(goldenPath)
-  const results: QueryResult[] = golden.map((entry) => {
-    const hits = searchMemory(project.id, entry.query, limit)
+  const results: QueryResult[] = await Promise.all(golden.map(async (entry) => {
+    const hits = await searchMemory(project.id, entry.query, limit)
     const rank = hits.findIndex((hit) => isRelevant(hit, entry))
     const noiseInTop8 = hits.slice(0, 8).filter((hit) => !isRelevant(hit, entry)).length
     const relevant = rank >= 0 ? hits[rank] : null
@@ -71,7 +71,7 @@ export function runRetrievalEval(projectName: string, goldenPath: string, limit 
       noiseInTop8,
       topPreview: (relevant?.summary || hits[0]?.summary || '').slice(0, 40),
     }
-  })
+  }))
   const total = results.length || 1
   const rankOf = (result: QueryResult) => result.firstRelevantRank ?? Number.POSITIVE_INFINITY
   const shareBelow = (k: number) => results.filter((result) => rankOf(result) <= k).length / total

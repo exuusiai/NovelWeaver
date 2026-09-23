@@ -5,7 +5,7 @@ import { useProject } from '../project-context'
 import type { Project } from '../types'
 import { Badge, Button, Field, Input, Modal, Textarea } from '../components/ui'
 
-interface ModelStatus { baseUrl: string; model: string; configured: boolean; mode: string; source?: string; persistence?: string; engine?: string; fallbackDescription?: string; verifiedAt?: string; lastProbeError?: string; lastProbedAt?: string; latencyMs?: number; networkLatencyMs?: number; probeType?: 'gateway' | 'minimal-generation' }
+interface ModelStatus { baseUrl: string; model: string; configured: boolean; mode: string; source?: string; persistence?: string; engine?: string; fallbackDescription?: string; verifiedAt?: string; lastProbeError?: string; lastProbedAt?: string; latencyMs?: number; networkLatencyMs?: number; probeType?: 'gateway' | 'minimal-generation'; embedding?: { model: string | null; enabled: boolean; total: number; embedded: number; coverage: number } }
 type Notice = { tone: 'success' | 'error' | 'info'; message: string }
 
 const providers = {
@@ -23,7 +23,7 @@ export function SettingsPage() {
   const [project, setProject] = useState<Project | null>(null)
   const [model, setModel] = useState<ModelStatus | null>(null)
   const [projectForm, setProjectForm] = useState({ name: '', genre: '', premise: '', wordGoal: 100000, status: 'active' as 'active' | 'completed' })
-  const [modelForm, setModelForm] = useState({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', apiKey: '' })
+  const [modelForm, setModelForm] = useState({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', apiKey: '', embeddingModel: '' })
   const [provider, setProvider] = useState<keyof typeof providers | 'custom'>('openai')
   const [notice, setNotice] = useState<Notice | null>(null)
   const [probing, setProbing] = useState(false)
@@ -36,7 +36,7 @@ export function SettingsPage() {
     setProject(projectRow)
     setModel(modelRow)
     setProjectForm({ name: projectRow.name, genre: projectRow.genre, premise: projectRow.premise, wordGoal: projectRow.word_goal, status: projectRow.status === 'completed' ? 'completed' : 'active' })
-    setModelForm((form) => ({ ...form, baseUrl: modelRow.baseUrl, model: modelRow.model }))
+    setModelForm((form) => ({ ...form, baseUrl: modelRow.baseUrl, model: modelRow.model, embeddingModel: modelRow.embedding?.model || '' }))
     setProvider(detectProvider(modelRow.baseUrl, modelRow.model))
   }
 
@@ -65,6 +65,7 @@ export function SettingsPage() {
       const payload = {
         baseUrl: modelForm.baseUrl.trim(),
         model: modelForm.model.trim(),
+        embeddingModel: modelForm.embeddingModel.trim(),
         ...(modelForm.apiKey.trim() ? { apiKey: modelForm.apiKey.trim() } : {}),
       }
       const configured = await post<ModelStatus>('/api/model', payload)
@@ -125,6 +126,7 @@ export function SettingsPage() {
         <Field label="模型名称"><Input value={modelForm.model} onChange={(event) => { setProvider('custom'); setModelForm({ ...modelForm, model: event.target.value }) }} /></Field>
         <Field label="API Base URL" hint="只填到服务商的 /v1；若误粘贴 /chat/completions，系统会自动移除。"><Input value={modelForm.baseUrl} onChange={(event) => { setProvider('custom'); setModelForm({ ...modelForm, baseUrl: event.target.value }) }} placeholder="https://example.com/v1" /></Field>
         <Field label="临时 API Key" hint={model?.configured ? '留空会保留当前密钥。临时密钥仅存在服务进程内，重启后失效。' : '仅存在当前服务进程内。需要重启后保留，请配置项目根目录的 .env。'}><div className="secret-input"><KeyRound size={15} /><Input type="password" autoComplete="off" value={modelForm.apiKey} onChange={(event) => setModelForm({ ...modelForm, apiKey: event.target.value })} placeholder={model?.configured ? '已配置；留空保持不变' : '粘贴 API Key'} /></div></Field>
+        <Field label="Embedding 模型（可选）" hint={model?.embedding ? `已向量化 ${model.embedding.embedded}/${model.embedding.total} 块记忆（覆盖率 ${(model.embedding.coverage * 100).toFixed(0)}%）。检索按查询形态自动门控：含实体名走词法，否则走向量。` : '填写后启用向量语义检索；留空则全部使用词法检索。'}><Input value={modelForm.embeddingModel} onChange={(event) => setModelForm({ ...modelForm, embeddingModel: event.target.value })} placeholder="例如 GLM-Embedding-3" /></Field>
         <div className="settings-actions"><Button onClick={saveAndProbe} disabled={probing || !modelForm.baseUrl.trim() || !modelForm.model.trim()}><Sparkles size={15} /> {probing ? '正在实测…' : '保存并测试'}</Button>{model?.configured && <Button variant="ghost" onClick={clearKey}>清除临时密钥</Button>}</div>
       </div>
       <p className="config-note">连接测试优先使用轻量 <code>/models</code> 网关探测；服务商不支持时才发送限制为 2 tokens 的最小生成。实际创作仍通过 <code>/chat/completions</code>。</p>

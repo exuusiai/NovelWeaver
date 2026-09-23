@@ -12,6 +12,7 @@ import { ingestRouter } from './routes/ingest.ts'
 import { generateRouter } from './routes/generate.ts'
 import { statsRouter } from './routes/stats.ts'
 import { recoverInterruptedJobs } from './routes/analysis-service.ts'
+import { startEmbeddingSweeper } from './embeddings.ts'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -30,6 +31,7 @@ app.use(statsRouter)
 
 recoverInterruptedJobs()
 startBackupScheduler()
+startEmbeddingSweeper()
 
 const dist = path.join(root, 'dist')
 if (fs.existsSync(dist)) {

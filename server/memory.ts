@@ -1,4 +1,5 @@
 import { db, sql } from './db.ts'
+import { cosine, embedQuery, getEmbeddingModel, MIN_EMBEDDING_COVERAGE, projectEmbeddingCoverage } from './embeddings.ts'
 
 export interface SearchHit {
   id: string
@@ -11,6 +12,7 @@ export interface SearchHit {
   score: number
   chapterDistance?: number | null
   reason?: string
+  path?: 'lexical' | 'vector'
 }
 
 type ContextItem = { kind: string; label: string; text: string; priority: number; relevance: number; tokens: number }
@@ -54,9 +56,10 @@ function baseTerms(query: string) {
   }))].slice(0, 24)
 }
 
-function expandedTerms(projectId: string, query: string) {
+function expandedTerms(projectId: string, query: string): { terms: string[]; entityMatches: number } {
   const terms = new Set(baseTerms(query))
   const normalizedQuery = normalize(query)
+  let entityMatches = 0
   const entities = sql.all<{ name: string; data: string }>('SELECT name, data FROM entities WHERE project_id = ?', projectId)
   for (const entity of entities) {
     let aliases: string[] = []
@@ -65,9 +68,12 @@ function expandedTerms(projectId: string, query: string) {
       aliases = Array.isArray(data.aliases) ? data.aliases.map(String) : []
     } catch { /* legacy data remains searchable by canonical name */ }
     const names = [entity.name, ...aliases].filter(Boolean)
-    if (names.some((name) => normalizedQuery.includes(normalize(name)))) names.forEach((name) => terms.add(name))
+    if (names.some((name) => normalizedQuery.includes(normalize(name)))) {
+      names.forEach((name) => terms.add(name))
+      entityMatches += 1
+    }
   }
-  return [...terms].slice(0, 32)
+  return { terms: [...terms].slice(0, 32), entityMatches }
 }
 
 function chapterPosition(chapterId?: string) {
@@ -112,11 +118,17 @@ export function deriveEntityStates(projectId: string, beforePosition?: number): 
   return [...states.values()]
 }
 
-export function searchMemory(projectId: string, query: string, limit = 12, currentChapterId?: string): SearchHit[] {
-  const cacheKey = `${projectVersion(projectId)}:${currentChapterId || ''}:${limit}:${normalize(query)}`
+// Gated retrieval, driven by the controlled experiment in eval/reports/: queries that
+// name a known entity are best served by the tuned lexical hybrid (round 1: 100% vs 94%),
+// name-free paraphrase queries by pure vectors (round 2: 100% vs 89%). Blind RRF fusion
+// lost in both regimes, so this is an either/or gate, not a blend.
+export async function searchMemory(projectId: string, query: string, limit = 12, currentChapterId?: string): Promise<SearchHit[]> {
+  // 覆盖率进缓存键：向量回填会改变可用索引但不动 projectVersion，缺少这一位
+  // 会让回填后的查询继续命中回填前的词法缓存。
+  const cacheKey = `${projectVersion(projectId)}:${currentChapterId || ''}:${limit}:${normalize(query)}:${projectEmbeddingCoverage(projectId).toFixed(2)}`
   const cached = searchCache.get(cacheKey)
   if (cached) return cached
-  const queryTerms = expandedTerms(projectId, query)
+  const { terms: queryTerms, entityMatches } = expandedTerms(projectId, query)
   if (!queryTerms.length) return []
   const total = sql.get<{ count: number }>('SELECT COUNT(*) count FROM chapters WHERE project_id = ?', projectId)?.count ?? 0
   const candidateLimit = Math.min(Math.max(50, total * 3), 500)
@@ -162,9 +174,47 @@ export function searchMemory(projectId: string, query: string, limit = 12, curre
       chapterDistance: distance, reason: `${matched.slice(0, 4).join('、') || '全文相关'}${distance === null ? '' : `；距当前章 ${distance} 章`}`,
     }
   })
-  const result = hits.sort((a, b) => b.score - a.score).slice(0, limit)
-  cacheSet(searchCache, cacheKey, result, 240)
-  return result
+  const lexicalHits = hits.sort((a, b) => b.score - a.score).slice(0, limit).map((hit) => ({
+    ...hit,
+    path: 'lexical' as const,
+  }))
+
+  // 向量门控：仅在查询不含任何已知实体名、向量模型就绪且该项目覆盖率达标时启用。
+  let finalHits: SearchHit[] = lexicalHits
+  if (entityMatches === 0 && getEmbeddingModel()) {
+    try {
+      if (projectEmbeddingCoverage(projectId) >= MIN_EMBEDDING_COVERAGE) {
+        const queryVector = await embedQuery(query)
+        const rows = sql.all<{ id: string; chapter_id: string | null; source_type: string; source_id: string; content: string; summary: string; keywords: string; importance: number; embedding: string }>(
+          "SELECT id, chapter_id, source_type, source_id, content, summary, keywords, importance, embedding FROM memory_chunks WHERE project_id = ? AND embedding != ''", projectId)
+        const vectorHits = rows
+          .map((row) => {
+            let vector: number[] = []
+            try { vector = JSON.parse(row.embedding) as number[] } catch { /* corrupted row falls back below */ }
+            return { row, score: vector.length ? (cosine(queryVector, vector) + 1) / 2 : -1 }
+          })
+          .filter((item) => item.score >= 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, limit)
+          .map(({ row, score }) => {
+            const rowPosition = row.chapter_id ? positions.get(String(row.chapter_id)) : undefined
+            const distance = currentPosition === undefined || rowPosition === undefined ? null : Math.abs(currentPosition - rowPosition)
+            return {
+              id: String(row.id), sourceType: String(row.source_type), sourceId: String(row.source_id),
+              chapterId: row.chapter_id ? String(row.chapter_id) : null, content: String(row.content),
+              summary: String(row.summary), keywords: String(row.keywords),
+              score: Number(score.toFixed(3)), chapterDistance: distance,
+              reason: '向量语义召回', path: 'vector' as const,
+            } satisfies SearchHit
+          })
+        // 向量候选过少说明索引不完整，保留词法结果更稳
+        if (vectorHits.length >= Math.min(limit, 3)) finalHits = vectorHits
+      }
+    } catch { /* 向量路径任何失败都回落词法 */ }
+  }
+
+  cacheSet(searchCache, cacheKey, finalHits, 240)
+  return finalHits
 }
 
 function pickWithinBudget(items: ContextItem[], budget: number) {
@@ -177,7 +227,7 @@ function pickWithinBudget(items: ContextItem[], budget: number) {
   return { included, trimmed, used }
 }
 
-export function assembleContext(projectId: string, prompt: string, chapterId?: string, tokenBudget = 10000): AssembledContext {
+export async function assembleContext(projectId: string, prompt: string, chapterId?: string, tokenBudget = 10000): Promise<AssembledContext> {
   const cacheKey = `${projectVersion(projectId)}:${chapterId || ''}:${tokenBudget}:${normalize(prompt)}`
   const cached = contextCache.get(cacheKey)
   if (cached) return cached
@@ -185,7 +235,7 @@ export function assembleContext(projectId: string, prompt: string, chapterId?: s
   const chapter = chapterId ? sql.get<Record<string, unknown>>('SELECT title, summary, content, pov, position FROM chapters WHERE id = ?', chapterId) : undefined
   const volume = chapterId ? sql.get<Record<string, unknown>>(`SELECT v.title, v.summary FROM volumes v
     JOIN chapter_volume_bindings b ON b.volume_id=v.id WHERE b.chapter_id=?`, chapterId) : undefined
-  const hits = searchMemory(projectId, prompt, 16, chapterId)
+  const hits = await searchMemory(projectId, prompt, 16, chapterId)
   const allFacts = sql.all<Record<string, unknown>>(`SELECT f.*, c.title chapter_title FROM story_facts f
     LEFT JOIN chapters c ON c.id=f.source_chapter_id WHERE f.project_id=? AND f.canon_status IN ('canon','candidate')
     ORDER BY CASE f.canon_status WHEN 'canon' THEN 0 ELSE 1 END, f.importance DESC LIMIT 40`, projectId)

@@ -8,6 +8,7 @@ import { runReview } from '../review.ts'
 import { buildDocx, buildEpub, buildMarkdown, buildTxt, manuscriptContentTypes, manuscriptExtension, type ManuscriptFormat } from '../exporter.ts'
 import { buildProjectExport, assembleManuscriptVolumes } from '../project-export.ts'
 import { backupPath, listBackups } from '../backup.ts'
+import { embeddingStatus, setEmbeddingModel } from '../embeddings.ts'
 import { asyncRoute, decodeRow, ensureDefaultVolume, requireProject } from './helpers.ts'
 
 export const projectsRouter = Router()
@@ -66,22 +67,26 @@ projectsRouter.delete('/api/projects/:projectId', (req, res) => {
   res.status(204).end()
 })
 
-projectsRouter.get('/api/projects/:projectId/search', (req, res) => {
-  requireProject(req.params.projectId)
+projectsRouter.get('/api/projects/:projectId/search', asyncRoute(async (req, res) => {
+  const projectId = String(req.params.projectId)
+  requireProject(projectId)
   const query = String(req.query.q || '')
   const chapterId = typeof req.query.chapterId === 'string' ? req.query.chapterId : undefined
-  res.json({ query, results: searchMemory(req.params.projectId, query, Number(req.query.limit || 15), chapterId) })
-})
+  res.json({ query, results: await searchMemory(projectId, query, Number(req.query.limit || 15), chapterId) })
+}))
 
-projectsRouter.get('/api/model', (_req, res) => res.json(getModelStatus()))
+projectsRouter.get('/api/model', (_req, res) => res.json({ ...getModelStatus(), embedding: embeddingStatus() }))
 projectsRouter.post('/api/model', (req, res) => {
-  const body = z.object({ baseUrl: z.string().url().optional(), apiKey: z.string().optional(), model: z.string().min(1).optional(), clearKey: z.boolean().optional() }).parse(req.body)
+  const body = z.object({ baseUrl: z.string().url().optional(), apiKey: z.string().optional(), model: z.string().min(1).optional(), embeddingModel: z.string().optional(), clearKey: z.boolean().optional() }).parse(req.body)
   const next: { baseUrl?: string; apiKey?: string; model?: string } = {}
   if (body.baseUrl !== undefined) next.baseUrl = body.baseUrl
   if (body.model !== undefined) next.model = body.model
   if (body.clearKey) next.apiKey = ''
   else if (body.apiKey?.trim()) next.apiKey = body.apiKey
-  res.json(setRuntimeConfig(next))
+  // 先写入凭据再触发向量回填：setEmbeddingModel 会立刻 kick，需要密钥已就位
+  const status = setRuntimeConfig(next)
+  if (body.embeddingModel !== undefined) setEmbeddingModel(body.embeddingModel)
+  res.json({ ...status, embedding: embeddingStatus() })
 })
 projectsRouter.post('/api/model/probe', asyncRoute(async (_req, res) => { res.json(await probeModel()) }))
 

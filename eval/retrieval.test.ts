@@ -18,14 +18,14 @@ describe('检索质量回归门', () => {
     const available = fs.existsSync(goldenPath) && (() => { try { resolveProject(gate.project); return true } catch { return false } })()
 
     const run = gate.required || available ? it : it.skip
-    run(`[${gate.project}] 金标准全部可解析且项目存在`, () => {
-      const report = runRetrievalEval(gate.project, goldenPath)
+    run(`[${gate.project}] 金标准全部可解析且项目存在`, async () => {
+      const report = await runRetrievalEval(gate.project, goldenPath)
       expect(report.queryCount).toBeGreaterThanOrEqual(10)
       expect(report.results.filter((result) => result.firstRelevantRank === null).length).toBe(0)
     })
 
-    run(`[${gate.project}] 指标不低于锁定基线（容忍 ${TOLERANCE * 100}pp）`, () => {
-      const report = runRetrievalEval(gate.project, goldenPath)
+    run(`[${gate.project}] 指标不低于锁定基线（容忍 ${TOLERANCE * 100}pp）`, async () => {
+      const report = await runRetrievalEval(gate.project, goldenPath)
       const baselinePath = baselinePathFor(gate.project)
       if (!fs.existsSync(baselinePath)) {
         fs.mkdirSync(path.dirname(baselinePath), { recursive: true })

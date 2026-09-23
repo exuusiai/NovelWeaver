@@ -279,6 +279,7 @@ seedDemo()
 for (const statement of [
   "ALTER TABLE generations ADD COLUMN usage TEXT NOT NULL DEFAULT ''",
   'ALTER TABLE generations ADD COLUMN used INTEGER NOT NULL DEFAULT -1',
+  "ALTER TABLE memory_chunks ADD COLUMN embedding TEXT NOT NULL DEFAULT ''",
 ]) {
   try { db.exec(statement) } catch { /* column already exists */ }
 }

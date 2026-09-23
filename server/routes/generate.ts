@@ -8,12 +8,12 @@ const generateRequestSchema = z.object({ projectId: z.string(), task: z.enum(['c
 
 export const generateRouter = Router()
 
-generateRouter.post('/api/ai/context', (req, res) => {
+generateRouter.post('/api/ai/context', asyncRoute(async (req, res) => {
   const body = z.object({ projectId: z.string(), prompt: z.string().default(''), chapterId: z.string().optional(), tokenBudget: z.number().int().min(1000).max(50000).default(10000) }).parse(req.body)
   requireProject(body.projectId)
-  const assembled = assembleContext(body.projectId, body.prompt, body.chapterId, body.tokenBudget)
+  const assembled = await assembleContext(body.projectId, body.prompt, body.chapterId, body.tokenBudget)
   res.json({ report: assembled.report, citations: assembled.hits })
-})
+}))
 
 generateRouter.post('/api/ai/generate', asyncRoute(async (req, res) => {
   const body = generateRequestSchema.parse(req.body)

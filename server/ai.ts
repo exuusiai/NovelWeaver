@@ -28,6 +28,12 @@ let lastProbeError = ''
 let lastProbedAt = ''
 let thinkingSupport: 'unknown' | 'supported' | 'unsupported' = 'unknown'
 
+// Function declaration (not arrow) so the embeddings module can import it across
+// the ai ↔ memory ↔ embeddings module cycle safely at call time.
+export function getGenerationCredentials() {
+  return { baseUrl: runtimeConfig.baseUrl, apiKey: runtimeConfig.apiKey }
+}
+
 export function getModelStatus() {
   return {
     baseUrl: runtimeConfig.baseUrl,
@@ -187,7 +193,7 @@ function recordGeneration(request: ModelRequest, assembledText: string, output: 
 }
 
 export async function generate(request: ModelRequest) {
-  const assembled = assembleContext(request.projectId, request.prompt, request.chapterId)
+  const assembled = await assembleContext(request.projectId, request.prompt, request.chapterId)
   let output: string
   let model = 'local-rules-v1'
   let usage: ModelUsage | undefined
@@ -249,11 +255,11 @@ async function* streamChatCompletion(messages: ChatMessage[], temperature: numbe
 
 export type GenerateStreamEvent =
   | { type: 'delta'; text: string }
-  | { type: 'done'; generationId: string; output: string; model: string; citations: ReturnType<typeof assembleContext>['hits']; contextReport: ReturnType<typeof assembleContext>['report'] }
+  | { type: 'done'; generationId: string; output: string; model: string; citations: Awaited<ReturnType<typeof assembleContext>>['hits']; contextReport: Awaited<ReturnType<typeof assembleContext>>['report'] }
   | { type: 'error'; message: string }
 
 export async function* generateStream(request: ModelRequest): AsyncGenerator<GenerateStreamEvent> {
-  const assembled = assembleContext(request.projectId, request.prompt, request.chapterId)
+  const assembled = await assembleContext(request.projectId, request.prompt, request.chapterId)
   let output = ''
   let model = 'local-rules-v1'
   if (runtimeConfig.apiKey) {

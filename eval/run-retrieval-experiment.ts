@@ -78,8 +78,8 @@ fs.writeFileSync(cachePath, JSON.stringify(cache))
 const chunkVectors = texts.map((text) => cache[text])
 
 // --- 三种检索方法 ---
-const lexicalRank = (query: string) => {
-  const hits = searchMemory(project.id, query, K)
+const lexicalRank = async (query: string) => {
+  const hits = await searchMemory(project.id, query, K)
   const rank = new Map<string, number>()
   hits.forEach((hit, index) => rank.set(hit.id, index + 1))
   return rank
@@ -131,7 +131,7 @@ const searchTiming: Record<string, number> = { 'A 词法混合（生产基线）
 
 for (let index = 0; index < golden.length; index += 1) {
   const entry = golden[index]
-  let t0 = performance.now(); const lex = lexicalRank(entry.query); searchTiming['A 词法混合（生产基线）'] += performance.now() - t0
+  let t0 = performance.now(); const lex = await lexicalRank(entry.query); searchTiming['A 词法混合（生产基线）'] += performance.now() - t0
   t0 = performance.now(); const vec = vectorRank(queryVectors[index]); searchTiming['B 纯向量'] += performance.now() - t0
   t0 = performance.now(); const fused = rrfFuse(lex, vec); searchTiming['C RRF 融合（词法+向量）'] += performance.now() - t0
   methods['A 词法混合（生产基线）'].push(lex)

@@ -16,7 +16,7 @@ if (!fs.existsSync(goldenPath)) {
   process.exit(1)
 }
 
-const report = runRetrievalEval(projectName, goldenPath)
+const report = await runRetrievalEval(projectName, goldenPath)
 
 if (saveBaseline) {
   fs.writeFileSync(baselinePath, JSON.stringify({ savedAt: new Date().toISOString(), metrics: report.metrics }, null, 2))
