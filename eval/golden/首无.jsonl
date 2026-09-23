@@ -1,0 +1,18 @@
+{"query": "斧高和长寿郎是什么关系", "expectAll": ["斧高", "长寿郎"], "category": "relation", "note": "主仆/仰慕；核心二人组"}
+{"query": "长寿郎和妃女子是什么关系", "expectAll": ["长寿郎", "妃女子"], "category": "relation", "note": "双胞胎兄妹"}
+{"query": "兵堂和笛子夫人是什么关系", "expectAll": ["兵堂", "笛子"], "category": "relation", "note": "通奸关系"}
+{"query": "藏田甲子在秘守家是什么身份", "expectAll": ["藏田甲子", "秘守家"], "category": "relation", "note": "乳母"}
+{"query": "高屋敷妙子和二见是什么关系", "expectAll": ["妙子", "二见"], "category": "relation", "note": "巡警线人物"}
+{"query": "秘守家和三守家二守家是什么关系", "expectAll": ["秘守家", "三守家"], "category": "relation", "note": "三家体制"}
+{"query": "铃江向斧高透露了什么秘密", "expectAll": ["铃江", "斧高"], "category": "relation", "note": "关键信息传递"}
+{"query": "佥鸟郁子的身份是什么", "expectAll": ["佥鸟郁子"], "category": "relation", "note": "家庭教师"}
+{"query": "十三夜参礼当晚发生了什么", "expectAll": ["十三夜参礼"], "category": "plotline", "note": "核心事件夜"}
+{"query": "妃女子是怎么死的", "expectAll": ["妃女子", "井"], "category": "plotline", "note": "坠井"}
+{"query": "柴刀作为凶器出现在哪里", "expectAny": ["柴刀"], "category": "plotline", "note": "凶器线索"}
+{"query": "淡首大人的传说是什么", "expectAll": ["淡首大人"], "category": "plotline", "note": "村中禁忌传说"}
+{"query": "媛神堂和媛首山的位置关系", "expectAll": ["媛神堂", "媛首山"], "category": "plotline", "note": "地理布局"}
+{"query": "刀城言耶的推理指出真相是什么", "expectAll": ["刀城言耶"], "category": "plotline", "note": "终章解答"}
+{"query": "斧高为什么能躲过无头尸的袭击", "expectAll": ["斧高", "首无"], "category": "logic", "note": "躲藏因果"}
+{"query": "高屋敷为什么坚持调查秘守家", "expectAll": ["高屋敷", "秘守家"], "category": "logic", "note": "调查动机"}
+{"query": "长寿郎的尸体会怎样处理", "expectAll": ["长寿郎", "尸"], "category": "logic", "note": "尸体处理逻辑"}
+{"query": "兵堂为什么隐瞒十三夜参礼的秘密", "expectAll": ["兵堂", "十三夜参礼"], "category": "logic", "note": "隐瞒动机"}

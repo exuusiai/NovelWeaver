@@ -1,0 +1,10 @@
+{
+  "savedAt": "2026-09-22T05:58:42.104Z",
+  "metrics": {
+    "recallAt5": 1,
+    "recallAt8": 1,
+    "recallAt16": 1,
+    "mrr": 0.946,
+    "noiseRatioTop8": 0.348
+  }
+}

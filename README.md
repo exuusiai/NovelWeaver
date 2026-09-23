@@ -1,74 +1,117 @@
-# NovelWeaver
+# NovelWeaver · 本地优先的小说创作 Agent 工作台
 
-本地优先的小说创作 Agent 工作台。当前版本已经打通项目创建、文稿导入、设定维护、剧情工程、章节写作、记忆检索、关系图、连续性审查、导出和 OpenAI 兼容模型接入。
+<p align="center">
+  <img src="https://img.shields.io/badge/React-19-149eca" alt="React 19" />
+  <img src="https://img.shields.io/badge/Express-5-000000" alt="Express 5" />
+  <img src="https://img.shields.io/badge/SQLite-FTS5%20trigram-003b57" alt="SQLite FTS5" />
+  <img src="https://img.shields.io/badge/TypeScript-strict-3178c6" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/tests-48%20passed-2ea44f" alt="tests" />
+  <img src="https://img.shields.io/badge/%E8%AF%84%E6%B5%8B-%E5%9F%BA%E7%BA%BF%2B%E5%9B%9E%E5%BD%92%E9%97%A8-8b5cf6" alt="eval" />
+</p>
 
-## 启动
+> 一个把 **长篇小说写作流** 搬进本地工作台的 AI 应用：文稿导入 → 结构化分析 → 分层记忆检索 → 流式生成 → 连续性审查 → 稿件导出，全流程可离线运行；接入任意 OpenAI 兼容 API 后获得完整模型能力。
+>
+> 与同类工具最大的不同：**AI 产出永远只是候选，正史必须由作者显式确认**；并用一套可复现的评测体系（金标准 + 基线 + 回归门）来度量检索与提取质量，而不是"看起来能用"。
 
-本机使用 Codex bundled Node 时：
+## 界面预览
+
+| | |
+|---|---|
+| ![仪表盘](docs/screenshots/dashboard.png) | ![写作台](docs/screenshots/writing-studio.png) |
+| **项目总览**：进度、写作统计、采纳率、Token 校准 | **三栏写作台**：正文 · 细纲 · 创作 Agent（上下文报告 + 生成前预检） |
+| ![世界设定](docs/screenshots/world-bible.png) | ![剧情板](docs/screenshots/plot-board.png) |
+| **世界设定**：八类实体档案、候选/正史状态流转 | **剧情板**：全书大纲版本、剧情线、事件时间轴、伏笔生命周期 |
+| ![分析中心](docs/screenshots/analysis-center.png) | |
+| **分析中心**：分批分析任务、证据覆盖率、幻觉风险、二次复核 | |
+
+## 核心亮点
+
+### 1. AI 幻觉治理：候选-正史工作流
+模型提取的人物、地点、事件一律进入 `candidate` 状态，证据覆盖率、低置信度与幻觉风险由规则量化（霍比特人项目：155 个候选实体，高幻觉风险 **0**）；只有作者显式确认才进入正史。无 API Key 时使用确定性本地规则，**不猜专名、不伪装智能**。
+
+### 2. 分层记忆检索 + 上下文预算
+SQLite FTS5（trigram 中文子串）+ LIKE 兜底 + bm25 + 实体别名扩展 + 章节距离衰减的混合检索；上下文组装按优先级装填 token 预算并输出裁剪报告。人物状态卡由事件序列确定性推演（最近事件/时间/位置），抑制角色"提前知情"。
+
+### 3. 可复现的评测体系（本项目的差异化重点）
+- **双语料金标准**：32 条检索查询（种子语料 14 条可任意复现 + 《首无》18 条真实语料，人物关系类要求双实体同块共现）
+- **基线锁定 + 回归门**：`pnpm eval` 出报告，指标劣化超过 2pp 测试即失败
+- **设定提取评测**：29 条 ground truth（译名对照正文校准），霍比特人全量分析后 **GT 召回率 100%**
+- **审查规则金丝雀**：预埋全部已知违规类型，规则弱化即测试失败
+- **行为指标埋点**：生成采纳率（追加/丢弃）、真实 token `usage` 采集用于校准估算器
+
+| 指标 | 雾港纪事（种子语料） | 首无（22 万字真实语料） | 霍比特人（19 万字） |
+|---|---|---|---|
+| 检索 Recall@8 | 100% | 100% | — |
+| 检索 MRR | 0.946 | 0.807 | — |
+| Top-8 疑似噪声率 | 34.8% | 34.0% | — |
+| 章节切分 | — | 26 章 | 20 章，0 空章 |
+| 设定提取 GT 召回 | — | — | **100%（29/29）** |
+| 证据覆盖率 | — | — | **100%** |
+
+### 4. 面向长文的工程细节
+- **自适应分批分析**：18k 字符分批 → 解析失败对半重试 → 精简字段兜底，配合多层 JSON 修复（`<think>` 剥离 / 代码块提取 / 括号配平 / jsonrepair）
+- **流式生成**：SSE 逐字渲染，最多 3 个版本并排对比、择一采纳（自动剥离 `[R1]` 引用标记）
+- **生成前预检**：缺视角、事件缺时间、本章伏笔未回收等规则提示，写前发现问题而非事后补救
+- **写作安全网**：停笔 2.5s 自动保存、章节历史版本（50 份可恢复）、每 12h 项目全量快照
+- **稿件导出**：TXT / Markdown / DOCX（手写 OOXML）/ EPUB（手写最小 EPUB 3 包）
+
+## 架构
+
+```text
+React 19 + Vite（路由懒加载分包）
+        │ /api（SSE / REST）
+        ▼
+Express 5 ── routes/ 按域拆分：projects · chapters · world · story · ingest · generate · stats
+        │                        helpers（事务/共享逻辑） · analysis-service（任务调度）
+        ▼
+SQLite + FTS5（WAL、外键级联、双 FTS 表 + 触发器）
+        │
+        ├── importer    TXT/MD/DOCX/EPUB/PDF → 预览-提交两阶段导入 → 分块索引
+        ├── analyzer    模型结构化抽取（zod 校验 + 自适应分批 + JSON 修复）→ 候选池
+        ├── memory      混合检索 + 人物状态推演 + 上下文组装（token 预算 + 裁剪报告）
+        ├── planner     大纲 → 剧情线/分卷/逐章细纲（重拆分时自动清理空白规划章）
+        ├── review      规则连续性审查 + 单章生成前预检
+        ├── exporter    TXT / MD / DOCX / EPUB
+        └── backup      全量快照 + 保留策略
+
+模型层：OpenAI 兼容网关（usage 采集 / 错误诊断 / 推理模型兼容），无 Key 时降级为确定性本地规则
+```
+
+## 快速开始
 
 ```bash
-export PATH="/Users/adnachiel/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:/Users/adnachiel/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback:$PATH"
 pnpm install
-pnpm dev
+pnpm dev            # http://localhost:5173（API 4300，内置"雾港纪事"演示项目）
+pnpm test           # 48 个单测 / API / 评测测试
+pnpm eval           # 检索评测报告；pnpm eval:baseline 锁基线
+pnpm eval:extraction  # 霍比特人切分校验 + 提取对照
+pnpm build && pnpm start   # 生产模式（默认只监听 127.0.0.1）
 ```
 
-打开 <http://localhost:5173>。开发服务器会把 `/api` 代理到 `http://localhost:4300`。
+无 API Key 即可体验导入、检索、规则审查、导出与本地生成；`eval/` 目录包含全部评测资产（金标准、Canary、基线），评测不依赖任何外部服务。
 
-常用命令：
+## 模型接入
 
-```bash
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm start
+两种方式（密钥刻意不持久化，生产请用环境变量）：
+
+1. 设置页"模型网关"填 Base URL / 模型名 / Key（仅保存在当前服务进程内存）；
+2. `.env` 配置 `AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL`（Base URL 只需到 `/v1`）。
+
+已在 DeepSeek-V4.1-Flash（含推理模型）上完整验证：20 章全量分析、流式生成、摘要重写。
+
+## 项目结构
+
+```text
+server/            Express 应用（routes/ 按域拆分）+ importer/analyzer/memory/planner/review/exporter/backup
+src/               React 工作台（9 个页面 + 三栏写作台）
+eval/              金标准 · 提取 ground truth · 基线 · 回归门 · 审查金丝雀 · 内部分析脚本
+docs/              架构说明与界面截图
+.data/             SQLite 数据库与备份（gitignore）
 ```
-
-`pnpm start` 会从 `dist/` 提供生产版页面，使用 `http://localhost:4300`。
-
-## 模型 API
-
-没有 API Key 时，系统使用 `local-rules-v1`。它是确定性的规则与模板，不是隐藏的小语言模型。数据管理、导入、搜索、图谱和规则审查仍可使用，但系统不会用正则猜测人物或地点；文稿会明确标为“待模型分析”。
-
-接入 OpenAI 兼容 API 有两种方式：
-
-1. 在“设置 → 模型网关”中输入 Base URL、模型名和临时 Key。Key 只保存在当前服务进程内。
-2. 复制 `.env.example` 的配置到运行环境，通过 `AI_BASE_URL`、`AI_API_KEY` 和 `AI_MODEL` 注入。
-
-项目会自动加载根目录的 `.env`。例如使用米醋 API：
-
-```env
-AI_BASE_URL=https://www.micuapi.ai/v1
-AI_API_KEY=你的密钥
-AI_MODEL=deepseek-v4-flash
-```
-
-Base URL 只需填写到 `/v1`，不要附加 `/chat/completions`；即使误填，系统也会自动规范化。设置页的“保存并测试”会立即发出最小请求，只有验证成功才显示“连接已验证”。仅填写 Key 不等于模型可用：`401` 通常表示密钥错误，`403` 表示无模型权限，`429` 表示额度或限流，`model_not_found` 表示密钥所属分组没有该模型渠道，`5xx` 表示供应商渠道暂不可用。
-
-## 已实现模块
-
-- 从零创建项目，以及 TXT、Markdown、DOCX、EPUB、PDF 文稿导入；
-- OPF 阅读顺序、目录去重、空章过滤、PDF 页码清理、章节识别、段落整理和切片索引；
-- 模型驱动的实体消歧、事件提取、关系提取和剧情线归纳，所有结果先进入候选；
-- 人物、地点、势力、力量体系、物品、世界和术语各自独立的详细档案字段；
-- 正史、候选、传闻、分支、废弃状态；
-- 剧情线、事件时间轴、状态看板、伏笔生命周期；
-- 总纲、单章细纲、正文草稿和设定候选生成；
-- 三栏章节工作台、可折叠/固定的左右侧栏与生成结果逐步采纳；
-- 分层记忆、证据检索、上下文组装和生成快照；
-- 人物、势力、地点、事件因果与伏笔网络五种独立图谱；
-- 章节结构、视角、时间、事件参与者、候选正史和伏笔检查；
-- 项目 JSON 全量备份；
-- 无密钥本地模式与 OpenAI 兼容 API 模式。
-
-## 数据
-
-SQLite 数据库位于 `.data/novelweaver.db`，已被 `.gitignore` 排除。首次运行会创建“雾港纪事”示例项目，用于展示全部页面和数据关系。
-
-数据表和模块边界见 [架构说明](docs/ARCHITECTURE.md)。产品规划见 [小说创作 Agent 产品与技术规划报告](小说创作Agent产品与技术规划报告.md)。
 
 ## 当前边界
 
-- 本地检索使用精确文本、关键词与重要度排序；数据库已为后续 Embedding 字段与重排器预留边界，收到 API 后可接入真实向量检索。
-- 无模型时不执行专名抽取；模型分析结果一律进入“候选”，确认前不会进入正史图谱。
-- API Key 的 UI 配置刻意不持久化。生产部署应使用环境变量或系统密钥服务。
-- 多人实时协作、权限系统和发布平台自动同步不属于当前单机版本。
+- 单机单用户，无鉴权（默认只监听回环地址）；检索暂为词法方案，Embedding 字段与重排器已在架构中预留边界，基线已锁定、升级后可直接对照
+- 多人协作与发布同步不在范围内；数据全量可导出为 JSON
+
+详细模块说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
