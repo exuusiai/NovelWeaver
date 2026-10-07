@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react'
+import { Background, Controls, Handle, MiniMap, Position, ReactFlow, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react'
 import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, type SimulationLinkDatum, type SimulationNodeDatum } from 'd3-force'
 import { Focus, Link2, Loader2, Network, Plus, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react'
 import { api, post } from '../api'
@@ -17,19 +17,34 @@ const modes = [
   ['foreshadowing', '伏笔网络', []],
 ] as const
 
+// 四向隐形锚点：ReactFlow 默认把边汇到节点中心，枢纽节点的十几条线会全部重叠；
+// 让每条边从"朝向对方的边侧"进出，扇形自然展开。
+const anchorHandleStyle = { visibility: 'hidden' as const, width: 2, height: 2, border: 'none', background: 'transparent', minWidth: 0, minHeight: 0 }
+const anchorPositions = [['t', Position.Top], ['r', Position.Right], ['b', Position.Bottom], ['l', Position.Left]] as const
+
+function AnchorNode({ data }: NodeProps) {
+  return <>
+    {anchorPositions.map(([id, position]) => <Handle key={`s-${id}`} type="source" id={id} position={position} style={anchorHandleStyle} isConnectable={false} />)}
+    {anchorPositions.map(([id, position]) => <Handle key={`t-${id}`} type="target" id={id} position={position} style={anchorHandleStyle} isConnectable={false} />)}
+    {(data as { label: ReactNode }).label}
+  </>
+}
+
+const nodeTypes = { entity: AnchorNode }
+
 type LayoutNode = SimulationNodeDatum & { id: string }
 type LayoutLink = SimulationLinkDatum<LayoutNode> & { relation: Relation }
 
 function forcePositions(entities: Entity[], relations: Relation[]) {
   if (!entities.length) return new Map<string, { x: number; y: number }>()
-  const radius = Math.max(180, entities.length * 18)
+  const radius = Math.max(220, entities.length * 22)
   const nodes: LayoutNode[] = entities.map((entity, index) => ({ id: entity.id, x: Math.cos(index / entities.length * Math.PI * 2) * radius, y: Math.sin(index / entities.length * Math.PI * 2) * radius }))
   const links: LayoutLink[] = relations.map((relation) => ({ source: relation.from_entity_id, target: relation.to_entity_id, relation }))
   const simulation = forceSimulation(nodes)
-    .force('link', forceLink<LayoutNode, LayoutLink>(links).id((node) => node.id).distance((link) => link.relation.type === 'same_person' ? 210 : 155).strength(.62))
-    .force('charge', forceManyBody().strength(entities.length > 35 ? -900 : -650))
+    .force('link', forceLink<LayoutNode, LayoutLink>(links).id((node) => node.id).distance((link) => link.relation.type === 'same_person' ? 280 : 225).strength(.5))
+    .force('charge', forceManyBody().strength(entities.length > 35 ? -1250 : -900))
     .force('center', forceCenter(0, 0))
-    .force('collision', forceCollide<LayoutNode>().radius(112).strength(.95))
+    .force('collision', forceCollide<LayoutNode>().radius(132).strength(.98))
     .stop()
   for (let tick = 0; tick < 240; tick += 1) simulation.tick()
   return new Map(nodes.map((node) => [node.id, { x: (node.x || 0) + 640, y: (node.y || 0) + 430 }]))
@@ -80,7 +95,6 @@ export function StoryGraph() {
     setEntities(graphData.entities); setRelations(graphData.relations); setPlot(plotData); setChapters(chapterRows)
   }
   useEffect(() => { load() }, [projectId])
-  useEffect(() => { window.setTimeout(() => flow?.fitView({ padding: .24, duration: 350 }), 30) }, [flow, mode, focusId, hops, hideIsolated, minStrength, scope])
 
   const allowed = modes.find(([key]) => key === mode)?.[2] || ['character']
   const baseEntities = useMemo(() => entities.filter((entity) => allowed.includes(entity.type as never) && (scope === 'review' ? ['canon', 'candidate'].includes(entity.canon_status) : entity.canon_status === 'canon')), [entities, allowed, scope])
@@ -120,15 +134,29 @@ export function StoryGraph() {
     visibleRelations = visibleRelations.filter((relation) => ids.has(relation.from_entity_id) && ids.has(relation.to_entity_id))
     const positions = forcePositions(visible, visibleRelations)
     const showLabels = Boolean(focusId || selectedNodeId)
-    const nodes: Node[] = visible.map((entity) => ({ id: entity.id, position: positions.get(entity.id) || { x: 0, y: 0 }, data: { label: <div className="graph-node"><span style={{ background: nodeColors[entity.type] || '#687078' }}>{entity.name.slice(0, 1)}</span><div><strong>{entity.name}</strong><small>{labelType(entity.type)}{entity.canon_status === 'candidate' ? ' · 候选' : ' · 正史'}</small></div></div> }, style: { width: 190, border: `${entity.id === focusId || entity.id === selectedNodeId ? 2 : 1}px ${entity.canon_status === 'candidate' ? 'dashed' : 'solid'} ${entity.id === focusId ? '#aa5a35' : entity.id === selectedNodeId ? '#202625' : entity.canon_status === 'candidate' ? '#c7973f' : `${nodeColors[entity.type] || '#687078'}88`}`, borderRadius: 6, boxShadow: entity.id === focusId ? '0 7px 24px rgba(170,90,53,.2)' : '0 4px 16px rgba(30,38,37,.08)', padding: 0, background: entity.canon_status === 'candidate' ? '#fffcf5' : '#fff' } }))
+    const nodes: Node[] = visible.map((entity) => ({ id: entity.id, type: 'entity' as const, position: positions.get(entity.id) || { x: 0, y: 0 }, data: { label: <div className="graph-node"><span style={{ background: nodeColors[entity.type] || '#687078' }}>{entity.name.slice(0, 1)}</span><div><strong>{entity.name}</strong><small>{labelType(entity.type)}{entity.canon_status === 'candidate' ? ' · 候选' : ' · 正史'}</small></div></div> }, style: { width: 190, border: `${entity.id === focusId || entity.id === selectedNodeId ? 2 : 1}px ${entity.canon_status === 'candidate' ? 'dashed' : 'solid'} ${entity.id === focusId ? '#aa5a35' : entity.id === selectedNodeId ? '#202625' : entity.canon_status === 'candidate' ? '#c7973f' : `${nodeColors[entity.type] || '#687078'}88`}`, borderRadius: 6, boxShadow: entity.id === focusId ? '0 7px 24px rgba(170,90,53,.2)' : '0 4px 16px rgba(30,38,37,.08)', padding: 0, background: entity.canon_status === 'candidate' ? '#fffcf5' : '#fff' } }))
+    // 依据布局坐标为每条边挑最近的边侧：|dx|>|dy| 走左右侧，否则走上下侧
+    const handleFor = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+      const dx = to.x - from.x
+      const dy = to.y - from.y
+      return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'r' : 'l') : (dy > 0 ? 'b' : 't')
+    }
     const edges: Edge[] = visibleRelations.map((relation) => {
       const identity = relation.type === 'same_person' || relation.type === 'identity_of'
       const selected = relation.id === selectedRelationId
       const color = identity ? '#735b8e' : relation.sentiment === 'negative' ? '#b65745' : relation.sentiment === 'positive' ? '#14746f' : '#89918f'
-      return { id: relation.id, source: relation.from_entity_id, target: relation.to_entity_id, type: 'default', label: identity || showLabels ? relation.label || relation.type : undefined, zIndex: selected ? 3 : 0, style: { stroke: color, strokeWidth: selected ? 4 : Math.max(identity ? 2.2 : 1, Math.min(3, relation.strength / 35)), strokeDasharray: identity ? '8 5' : undefined }, labelStyle: { fontSize: 10, fontWeight: identity ? 700 : 500, fill: color }, labelBgStyle: { fill: '#f8f7f3', fillOpacity: .95 } }
+      const fromPos = positions.get(relation.from_entity_id) || { x: 0, y: 0 }
+      const toPos = positions.get(relation.to_entity_id) || { x: 0, y: 0 }
+      return { id: relation.id, source: relation.from_entity_id, target: relation.to_entity_id, sourceHandle: handleFor(fromPos, toPos), targetHandle: handleFor(toPos, fromPos), type: 'default', label: identity || showLabels ? relation.label || relation.type : undefined, zIndex: selected ? 3 : 0, style: { stroke: color, strokeWidth: selected ? 4 : Math.max(identity ? 2.2 : 1, Math.min(3, relation.strength / 35)), strokeDasharray: identity ? '8 5' : undefined }, labelStyle: { fontSize: 10, fontWeight: identity ? 700 : 500, fill: color }, labelBgStyle: { fill: '#f8f7f3', fillOpacity: .95 } }
     })
     return { nodes, edges }
   }, [baseEntities, relations, mode, plot, chapters, focusId, hops, hideIsolated, minStrength, selectedNodeId, selectedRelationId])
+
+  // 数据异步到达后（节点数从 0 变化）也要重新 fitView，否则画布停在空白视口
+  useEffect(() => {
+    if (!graph.nodes.length) return
+    window.setTimeout(() => flow?.fitView({ padding: .24, duration: 350 }), 60)
+  }, [flow, graph.nodes.length, mode, focusId, hops, hideIsolated, minStrength, scope])
 
   const modeEntities = baseEntities
   const selectedEntity = entities.find((entity) => entity.id === selectedNodeId)
@@ -146,7 +174,7 @@ export function StoryGraph() {
     <div className="graph-toolbar"><div className="graph-toolbar-groups"><div className="segmented">{modes.map(([key, label]) => <button key={key} className={mode === key ? 'active' : ''} onClick={() => { setMode(key); setFocusId(''); setSelectedNodeId(''); setSelectedRelationId('') }}>{label}</button>)}</div>{!['events', 'foreshadowing'].includes(mode) && <div className="segmented"><button className={scope === 'review' ? 'active' : ''} onClick={() => setScope('review')}>候选审阅</button><button className={scope === 'canon' ? 'active' : ''} onClick={() => setScope('canon')}>仅正史</button></div>}</div><div className="graph-legend"><span><i className="positive" />正向</span><span><i className="neutral" />中性</span><span><i className="negative" />冲突</span><span><i className="identity" />同一人身份</span><Button variant="secondary" onClick={analyzeManuscript} disabled={analyzing}>{analyzing ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />} {analyzing ? '同步中…' : '从文稿同步'}</Button>{modeEntities.length > 1 && <Button onClick={() => { setForm({ ...form, fromEntityId: modeEntities[0]?.id || '', toEntityId: modeEntities[1]?.id || '' }); setOpen(true) }}><Plus size={15} /> 新增关系</Button>}</div></div>
     {!['events', 'foreshadowing'].includes(mode) && <div className="graph-filterbar"><div className="graph-search"><Search size={15} /><Input value={query} onChange={(event) => { setQuery(event.target.value); setFocusId('') }} placeholder={`搜索${mode === 'characters' ? '人物或别称' : '节点'}…`} />{searchResults.length > 0 && !focusId && <div className="graph-search-results">{searchResults.map((entity) => <button key={entity.id} onClick={() => focusEntity(entity)}><strong>{entity.name}</strong><span>{displayValue(entity.data?.aliases) || entity.summary || '暂无摘要'}</span></button>)}</div>}</div><div className="graph-filter-controls"><Focus size={15} /><select className="input" value={hops} onChange={(event) => setHops(Number(event.target.value) as 1 | 2)} disabled={!focusId}><option value={1}>一跳关系</option><option value={2}>二跳关系</option></select><label><input type="checkbox" checked={hideIsolated} onChange={(event) => setHideIsolated(event.target.checked)} />隐藏孤立节点</label><label className="strength-filter"><SlidersHorizontal size={14} />强度 ≥ {minStrength}<input type="range" min="0" max="80" step="10" value={minStrength} onChange={(event) => setMinStrength(Number(event.target.value))} /></label>{focusId && <Button variant="ghost" onClick={() => { setFocusId(''); setQuery('') }}><X size={14} /> 清除聚焦</Button>}</div></div>}
     {analyzing && <LoadingState label="正在提取实体、关系、事件与剧情线" />}{analysisNotice && <p className="analysis-notice">{analysisNotice}</p>}
-    <section className="graph-canvas">{graph.nodes.length ? <ReactFlow nodes={graph.nodes} edges={graph.edges} fitView fitViewOptions={{ padding: .22 }} minZoom={.2} maxZoom={2} onInit={setFlow} onPaneClick={() => { setSelectedNodeId(''); setSelectedRelationId('') }} onNodeClick={(_, node) => { setSelectedNodeId(node.id); setSelectedRelationId('') }} onEdgeClick={(_, edge) => { setSelectedRelationId(edge.id); setSelectedNodeId('') }} onNodeDoubleClick={(_, node) => { const entity = entities.find((item) => item.id === node.id); const event = plot.events.find((item) => item.id === node.id); const chapter = chapters.find((item) => item.id === node.id); navigate(`/memory?q=${encodeURIComponent(entity?.name || event?.title || chapter?.title || '')}`) }}><Background gap={22} size={1} color="#d8d8d1" /><MiniMap pannable zoomable nodeColor={(node) => nodeColors[entities.find((entity) => entity.id === node.id)?.type || ''] || '#89918f'} /><Controls /></ReactFlow> : <div className="graph-empty"><Network size={28} /><strong>这个视图还没有可显示的关系</strong><p>{hideIsolated ? '当前已隐藏孤立节点；可关闭筛选，或从文稿同步并审阅候选关系。' : '导入文稿后运行模型分析，并在设定百科中检查候选条目。'}</p></div>}
+    <section className="graph-canvas">{graph.nodes.length ? <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: .22 }} minZoom={.2} maxZoom={2} onInit={setFlow} onPaneClick={() => { setSelectedNodeId(''); setSelectedRelationId('') }} onNodeClick={(_, node) => { setSelectedNodeId(node.id); setSelectedRelationId('') }} onEdgeClick={(_, edge) => { setSelectedRelationId(edge.id); setSelectedNodeId('') }} onNodeDoubleClick={(_, node) => { const entity = entities.find((item) => item.id === node.id); const event = plot.events.find((item) => item.id === node.id); const chapter = chapters.find((item) => item.id === node.id); navigate(`/memory?q=${encodeURIComponent(entity?.name || event?.title || chapter?.title || '')}`) }}><Background gap={22} size={1} color="#d8d8d1" /><MiniMap pannable zoomable nodeColor={(node) => nodeColors[entities.find((entity) => entity.id === node.id)?.type || ''] || '#89918f'} /><Controls /></ReactFlow> : <div className="graph-empty"><Network size={28} /><strong>这个视图还没有可显示的关系</strong><p>{hideIsolated ? '当前已隐藏孤立节点；可关闭筛选，或从文稿同步并审阅候选关系。' : '导入文稿后运行模型分析，并在设定百科中检查候选条目。'}</p></div>}
       <div className="graph-summary"><Network size={16} /><strong>{graph.nodes.length}</strong> 个节点 · <strong>{graph.edges.length}</strong> 条关系 · 双击节点查看证据</div>
       {(selectedEntity || selectedRelation) && <aside className="graph-detail"><header><div><span>{selectedEntity ? labelType(selectedEntity.type) : '关系'}</span><strong>{selectedEntity?.name || selectedRelation?.label || selectedRelation?.type}</strong></div><IconButton label="关闭详情" onClick={() => { setSelectedNodeId(''); setSelectedRelationId('') }}><X size={16} /></IconButton></header>{selectedEntity && <><p>{selectedEntity.summary || '暂无摘要'}</p>{displayValue(selectedEntity.data?.aliases) && <div className="graph-detail-row"><span>普通别称</span><strong>{displayValue(selectedEntity.data?.aliases)}</strong></div>}{displayValue(selectedEntity.data?.narrativeIdentities) && <div className="graph-detail-row"><span>独立身份</span><strong>{displayValue(selectedEntity.data?.narrativeIdentities)}</strong></div>}<div className="graph-detail-connections"><span>直接关系 · {selectedConnections.length}</span>{selectedConnections.slice(0, 10).map((relation) => { const otherId = relation.from_entity_id === selectedEntity.id ? relation.to_entity_id : relation.from_entity_id; const other = entities.find((entity) => entity.id === otherId); return <button key={relation.id} onClick={() => other && focusEntity(other)}><strong>{other?.name || '未知节点'}</strong><small>{relation.label || relation.type} · {relation.strength}</small></button> })}</div><Button variant="secondary" onClick={() => navigate(`/memory?q=${encodeURIComponent(selectedEntity.name)}`)}><Search size={14} /> 查看原文证据</Button></>}{selectedRelation && <RelationDetail relation={selectedRelation} entities={entities} onFocus={focusEntity} />}</aside>}
     </section>
