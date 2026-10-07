@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { db, sql } from '../db.ts'
 import { searchMemory } from '../memory.ts'
-import { generate, generateStream, getModelStatus, probeModel, setRuntimeConfig } from '../ai.ts'
+import { generate, generateStream, getModelStatus, normalizeBaseUrl, probeModel, setRuntimeConfig } from '../ai.ts'
 import { runReview } from '../review.ts'
 import { buildDocx, buildEpub, buildMarkdown, buildTxt, manuscriptContentTypes, manuscriptExtension, type ManuscriptFormat } from '../exporter.ts'
 import { buildProjectExport, assembleManuscriptVolumes } from '../project-export.ts'
@@ -89,6 +89,16 @@ projectsRouter.post('/api/model', (req, res) => {
   res.json({ ...status, embedding: embeddingStatus() })
 })
 projectsRouter.post('/api/model/probe', asyncRoute(async (_req, res) => { res.json(await probeModel()) }))
+// 拉取网关可用模型列表：用户不必猜测模型名。只读探测，不触碰运行时配置。
+projectsRouter.post('/api/model/catalog', asyncRoute(async (req, res) => {
+  const body = z.object({ baseUrl: z.string().trim().min(1), apiKey: z.string().trim().optional() }).parse(req.body)
+  const url = `${normalizeBaseUrl(body.baseUrl).replace(/\/$/, '')}/models`
+  const upstream = await fetch(url, { headers: body.apiKey ? { Authorization: `Bearer ${body.apiKey}` } : {}, signal: AbortSignal.timeout(8000) })
+  if (!upstream.ok) throw Object.assign(new Error(`模型列表请求失败（HTTP ${upstream.status}）`), { status: 502 })
+  const data = await upstream.json() as { data?: Array<{ id?: string }> }
+  const models = (data.data ?? []).map((item) => String(item.id || '')).filter(Boolean).sort()
+  res.json({ models })
+}))
 
 projectsRouter.get('/api/projects/:projectId/reviews', (req, res) => {
   requireProject(req.params.projectId)

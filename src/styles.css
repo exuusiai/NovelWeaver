@@ -776,6 +776,16 @@ h1, h2, h3, p { margin: 0; }
 .model-mode p { color: var(--muted); font-size: 8px; margin-top: 2px; overflow-wrap: anywhere; }
 .secret-input { display: flex; align-items: center; border: 1px solid #d5d7d2; border-radius: 5px; background: white; padding-left: 8px; color: var(--faint); }
 .secret-input .input { border: 0; }
+.secret-input .key-toggle { border: 0; background: transparent; width: 30px; height: 30px; display: grid; place-items: center; color: var(--faint); cursor: pointer; border-radius: 4px; }
+.secret-input .key-toggle:hover { color: var(--ink); background: #f1f1ec; }
+.model-name-row { display: flex; gap: 7px; align-items: stretch; }
+.model-name-row .input { flex: 1; }
+.model-name-row .button { flex: 0 0 auto; min-height: 36px; height: 36px; padding: 6px 9px; font-size: 10px; white-space: nowrap; }
+.model-catalog { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; max-height: 120px; overflow-y: auto; padding: 2px; }
+.model-catalog button { border: 1px solid var(--line); border-radius: 999px; background: white; color: var(--muted); font-size: 9px; padding: 3px 9px; cursor: pointer; transition: background-color var(--anim), color var(--anim), border-color var(--anim); }
+.model-catalog button:hover { border-color: #8bb9b1; color: var(--teal); }
+.model-catalog button.active { background: var(--teal-soft); border-color: transparent; color: #12645e; font-weight: 700; }
+.model-catalog > span { color: var(--faint); font-size: 9px; align-self: center; }
 .settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 36px; }
 .model-settings-grid .settings-actions { grid-column: 1 / -1; }
 .config-note { margin: 0 18px; padding: 10px 12px; border-left: 3px solid #88aaa4; background: #f4f7f5; color: var(--muted); font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
@@ -932,6 +942,7 @@ h1, h2, h3, p { margin: 0; }
 .summary-row .summary-input { flex: 1; }
 .summary-row .summary-ai { align-self: flex-end; white-space: nowrap; font-size: 10px; }
 .summary-notice { width: 100%; margin: 4px 2px 0; color: var(--muted); font-size: 10px; }
+.adoption-notice { width: 100%; margin-top: 9px; padding: 8px 10px; border-radius: 5px; background: var(--teal-soft); color: #12645e; font-size: 10px; line-height: 1.6; }
 
 /* 仪表盘写作统计 */
 .stats-band { margin-top: 14px; padding: 14px 18px; }

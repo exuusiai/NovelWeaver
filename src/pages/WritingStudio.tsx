@@ -255,10 +255,25 @@ export function WritingStudio() {
   const sendFeedback = (generationId: string | undefined, action: 'appended' | 'discarded') => {
     if (generationId) void post(`/api/generations/${generationId}/feedback`, { action }).catch(() => undefined)
   }
-  const appendResult = () => {
+  const [adoptionNotice, setAdoptionNotice] = useState<string | null>(null)
+  // 采纳后自动预检：对比采纳前后的规则检查差异，把"这次生成引入了什么问题"变成即时反馈
+  const appendResult = async () => {
     if (!draft || !currentResult?.output.trim()) return
-    setDraft({ ...draft, content: `${draft.content}${draft.content ? '\n\n' : ''}${cleanGeneratedProse(currentResult.output)}` })
+    const before = await api<{ issues: Array<{ title: string }> }>(`/api/chapters/${draft.id}/precheck`).catch(() => ({ issues: [] }))
+    const merged = `${draft.content}${draft.content ? '\n\n' : ''}${cleanGeneratedProse(currentResult.output)}`
+    const payload = { title: draft.title, content: merged, summary: draft.summary, pov: draft.pov, status: draft.status, targetWords: draft.target_words }
+    try {
+      const next = await patch<Chapter>(`/api/chapters/${draft.id}`, payload)
+      setDraft((row) => row && row.id === next.id ? { ...row, ...next } : row)
+      setChapters((rows) => rows.map((row) => row.id === next.id ? next : row))
+    } catch { setDraft({ ...draft, content: merged }) }
     sendFeedback(currentResult.generationId, 'appended')
+    const after = await api<{ issues: Array<{ title: string }> }>(`/api/chapters/${draft.id}/precheck`).catch(() => ({ issues: [] }))
+    const beforeTitles = new Set(before.issues.map((issue) => issue.title))
+    const added = after.issues.filter((issue) => !beforeTitles.has(issue.title))
+    setAdoptionNotice(added.length
+      ? `已追加到正文并保存；预检新增 ${added.length} 个提示：${added.slice(0, 3).map((issue) => issue.title).join('；')}${added.length > 3 ? ' 等' : ''}。`
+      : '已追加到正文并保存；预检无新增提示。')
   }
   const discardVariants = () => {
     variants.forEach((item) => sendFeedback(item.generationId, 'discarded'))
@@ -304,6 +319,7 @@ export function WritingStudio() {
         <div className="result-meta"><span>{currentResult.model || (generating ? '正在生成…' : '')}</span><span>{currentResult.citations.length} 条记忆证据</span></div>
         <MarkdownLike text={currentResult.output || (generating ? '…' : '')} citations={currentResult.citations} />
         <Button variant="secondary" onClick={appendResult} disabled={generating || !currentResult.output.trim()}>追加「{variantLabel(activeVariant)}」到正文</Button>
+        {adoptionNotice && <p className="adoption-notice">{adoptionNotice}</p>}
       </> : <div className="agent-placeholder"><Sparkles size={22} /><p>生成结果会出现在这里。可生成多个版本并排对比，再挑选追加。所有新增事实仍需在审查台确认。</p></div>}</div>
     </aside> : <button className="open-ai-panel" onClick={() => setPanelOpen(true)} title="打开创作 Agent"><Sparkles size={19} /></button>}
     {deleteOpen && draft && <Modal title="删除章节" onClose={() => setDeleteOpen(false)} footer={<><Button variant="ghost" onClick={() => setDeleteOpen(false)}>取消</Button><Button variant="danger" onClick={deleteChapter}><Trash2 size={15} /> 确认删除</Button></>}><div className="delete-confirm"><Trash2 size={24} /><p>将永久删除“<strong>{draft.title}</strong>”及其章节记忆和关联事件。其余章节会自动重新排序。</p></div></Modal>}
