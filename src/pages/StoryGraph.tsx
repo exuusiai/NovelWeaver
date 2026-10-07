@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Background, Controls, Handle, MiniMap, Position, ReactFlow, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react'
-import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, type SimulationLinkDatum, type SimulationNodeDatum } from 'd3-force'
+import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type SimulationLinkDatum, type SimulationNodeDatum } from 'd3-force'
 import { Focus, Link2, Loader2, Network, Plus, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react'
 import { api, post } from '../api'
 import { useProject } from '../project-context'
@@ -35,19 +35,57 @@ const nodeTypes = { entity: AnchorNode }
 type LayoutNode = SimulationNodeDatum & { id: string }
 type LayoutLink = SimulationLinkDatum<LayoutNode> & { relation: Relation }
 
-function forcePositions(entities: Entity[], relations: Relation[]) {
+function forcePositions(entities: Entity[], relations: Relation[], anchors?: Map<string, { x: number; y: number }>) {
   if (!entities.length) return new Map<string, { x: number; y: number }>()
   const radius = Math.max(220, entities.length * 22)
   const nodes: LayoutNode[] = entities.map((entity, index) => ({ id: entity.id, x: Math.cos(index / entities.length * Math.PI * 2) * radius, y: Math.sin(index / entities.length * Math.PI * 2) * radius }))
   const links: LayoutLink[] = relations.map((relation) => ({ source: relation.from_entity_id, target: relation.to_entity_id, relation }))
   const simulation = forceSimulation(nodes)
-    .force('link', forceLink<LayoutNode, LayoutLink>(links).id((node) => node.id).distance((link) => link.relation.type === 'same_person' ? 280 : 225).strength(.5))
+    .force('link', forceLink<LayoutNode, LayoutLink>(links).id((node) => node.id).distance((link) => link.relation.type === 'same_person' ? 280 : 225).strength(anchors?.size ? .42 : .5))
     .force('charge', forceManyBody().strength(entities.length > 35 ? -1250 : -900))
     .force('center', forceCenter(0, 0))
     .force('collision', forceCollide<LayoutNode>().radius(132).strength(.98))
     .stop()
+  if (anchors?.size) {
+    // 分簇引力：成员被拉向各自家族/势力的圆周锚点，跨族边自然拉长变稀疏
+    simulation
+      .force('groupX', forceX<LayoutNode>((node) => anchors.get(node.id)?.x ?? 0).strength(.34))
+      .force('groupY', forceY<LayoutNode>((node) => anchors.get(node.id)?.y ?? 0).strength(.34))
+  }
   for (let tick = 0; tick < 240; tick += 1) simulation.tick()
   return new Map(nodes.map((node) => [node.id, { x: (node.x || 0) + 640, y: (node.y || 0) + 430 }]))
+}
+
+const groupPalette = ['#14746f', '#a45b36', '#496982', '#735b8e', '#8a7441', '#3d7048', '#9b4a6e', '#5b7a9e']
+
+interface GroupMeta { id: string; name: string; color: string; memberCount: number }
+interface GroupResult { assignment: Map<string, { groupId: string; name: string; color: string }>; meta: GroupMeta[] }
+
+// 家族/势力分组：人物经 member 关系挂到的组织实体。家族常被分析器标为 location
+// （如首无的秘守家/二守家），所以 location 也算合法锚点；少于 2 名成员的组不成簇。
+function resolveGroups(entities: Entity[], relations: Relation[]): GroupResult {
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]))
+  const members = new Map<string, Set<string>>()
+  for (const relation of relations) {
+    if (relation.type !== 'member') continue
+    const from = entityById.get(relation.from_entity_id)
+    const to = entityById.get(relation.to_entity_id)
+    if (!from || !to || from.type !== 'character' || !['faction', 'location'].includes(to.type)) continue
+    const set = members.get(to.id) ?? new Set<string>()
+    set.add(from.id)
+    members.set(to.id, set)
+  }
+  const qualified = [...members.entries()].filter(([, set]) => set.size >= 2)
+    .sort((a, b) => (entityById.get(a[0])?.name || '').localeCompare(entityById.get(b[0])?.name || ''))
+  if (qualified.length < 2) return { assignment: new Map(), meta: [] }
+  const meta: GroupMeta[] = qualified.slice(0, groupPalette.length).map(([id, set]) => ({ id, name: entityById.get(id)?.name || id, color: groupPalette[qualified.findIndex((entry) => entry[0] === id) % groupPalette.length], memberCount: set.size }))
+  const assignment = new Map<string, { groupId: string; name: string; color: string }>()
+  for (const group of meta) {
+    for (const memberId of members.get(group.id) ?? []) {
+      if (!assignment.has(memberId)) assignment.set(memberId, { groupId: group.id, name: group.name, color: group.color })
+    }
+  }
+  return { assignment, meta }
 }
 
 function neighborIds(origin: string, relations: Relation[], hops: 1 | 2) {
@@ -96,6 +134,9 @@ export function StoryGraph() {
   }
   useEffect(() => { load() }, [projectId])
 
+  const groupResult = useMemo(
+    () => mode === 'characters' ? resolveGroups(entities, relations) : { assignment: new Map<string, { groupId: string; name: string; color: string }>(), meta: [] as GroupMeta[] },
+    [entities, relations, mode])
   const allowed = modes.find(([key]) => key === mode)?.[2] || ['character']
   const baseEntities = useMemo(() => entities.filter((entity) => allowed.includes(entity.type as never) && (scope === 'review' ? ['canon', 'candidate'].includes(entity.canon_status) : entity.canon_status === 'canon')), [entities, allowed, scope])
   const searchResults = useMemo(() => {
@@ -132,9 +173,20 @@ export function StoryGraph() {
     }
     const ids = new Set(visible.map((entity) => entity.id))
     visibleRelations = visibleRelations.filter((relation) => ids.has(relation.from_entity_id) && ids.has(relation.to_entity_id))
-    const positions = forcePositions(visible, visibleRelations)
+    const anchors = new Map<string, { x: number; y: number }>()
+    if (groupResult.meta.length >= 2) {
+      const clusterRadius = Math.max(560, visible.length * 26)
+      groupResult.meta.forEach((group, index) => {
+        const angle = (index / groupResult.meta.length) * Math.PI * 2 - Math.PI / 2
+        const anchor = { x: Math.cos(angle) * clusterRadius, y: Math.sin(angle) * clusterRadius }
+        for (const [memberId, membership] of groupResult.assignment) {
+          if (membership.groupId === group.id && ids.has(memberId)) anchors.set(memberId, anchor)
+        }
+      })
+    }
+    const positions = forcePositions(visible, visibleRelations, anchors)
     const showLabels = Boolean(focusId || selectedNodeId)
-    const nodes: Node[] = visible.map((entity) => ({ id: entity.id, type: 'entity' as const, position: positions.get(entity.id) || { x: 0, y: 0 }, data: { label: <div className="graph-node"><span style={{ background: nodeColors[entity.type] || '#687078' }}>{entity.name.slice(0, 1)}</span><div><strong>{entity.name}</strong><small>{labelType(entity.type)}{entity.canon_status === 'candidate' ? ' · 候选' : ' · 正史'}</small></div></div> }, style: { width: 190, border: `${entity.id === focusId || entity.id === selectedNodeId ? 2 : 1}px ${entity.canon_status === 'candidate' ? 'dashed' : 'solid'} ${entity.id === focusId ? '#aa5a35' : entity.id === selectedNodeId ? '#202625' : entity.canon_status === 'candidate' ? '#c7973f' : `${nodeColors[entity.type] || '#687078'}88`}`, borderRadius: 6, boxShadow: entity.id === focusId ? '0 7px 24px rgba(170,90,53,.2)' : '0 4px 16px rgba(30,38,37,.08)', padding: 0, background: entity.canon_status === 'candidate' ? '#fffcf5' : '#fff' } }))
+    const nodes: Node[] = visible.map((entity) => ({ id: entity.id, type: 'entity' as const, position: positions.get(entity.id) || { x: 0, y: 0 }, data: { label: <div className="graph-node"><span style={{ background: groupResult.assignment.get(entity.id)?.color || nodeColors[entity.type] || '#687078' }}>{entity.name.slice(0, 1)}</span><div><strong>{entity.name}</strong><small>{labelType(entity.type)}{entity.canon_status === 'candidate' ? ' · 候选' : ' · 正史'}</small></div></div> }, style: { width: 190, border: `${entity.id === focusId || entity.id === selectedNodeId ? 2 : 1}px ${entity.canon_status === 'candidate' ? 'dashed' : 'solid'} ${entity.id === focusId ? '#aa5a35' : entity.id === selectedNodeId ? '#202625' : entity.canon_status === 'candidate' ? '#c7973f' : groupResult.assignment.get(entity.id)?.color || `${nodeColors[entity.type] || '#687078'}88`}`, borderRadius: 6, boxShadow: entity.id === focusId ? '0 7px 24px rgba(170,90,53,.2)' : '0 4px 16px rgba(30,38,37,.08)', padding: 0, background: entity.canon_status === 'candidate' ? '#fffcf5' : '#fff' } }))
     // 依据布局坐标为每条边挑最近的边侧：|dx|>|dy| 走左右侧，否则走上下侧
     const handleFor = (from: { x: number; y: number }, to: { x: number; y: number }) => {
       const dx = to.x - from.x
@@ -159,15 +211,15 @@ export function StoryGraph() {
       return { id: relation.id, source: relation.from_entity_id, target: relation.to_entity_id, sourceHandle: handleFor(fromPos, toPos), targetHandle: handleFor(toPos, fromPos), type: 'default', pathOptions: { curvature }, label: identity || showLabels ? relation.label || relation.type : undefined, zIndex: selected ? 3 : 0, style: { stroke: color, strokeWidth: selected ? 3.5 : Math.max(identity ? 2 : 1, Math.min(2.4, relation.strength / 45)), opacity: selected || identity ? 1 : .85, strokeDasharray: identity ? '8 5' : undefined }, labelStyle: { fontSize: 10, fontWeight: identity ? 700 : 500, fill: color }, labelBgStyle: { fill: '#f8f7f3', fillOpacity: .95 } }
     })
     return { nodes, edges }
-  }, [baseEntities, relations, mode, plot, chapters, focusId, hops, hideIsolated, minStrength, selectedNodeId, selectedRelationId])
+  }, [baseEntities, relations, groupResult, mode, plot, chapters, focusId, hops, hideIsolated, minStrength, selectedNodeId, selectedRelationId])
 
   // 数据异步到达后（节点数从 0 变化）也要重新 fitView，否则画布停在空白视口。
   // focusId 变化由 focusEntity 自己做节点定向缩放；这里若同时全图 fitView 会与之竞态，
   // 把聚焦簇缩成针尖，故聚焦状态下跳过。
   useEffect(() => {
     if (!graph.nodes.length || focusId) return
-    window.setTimeout(() => flow?.fitView({ padding: .24, duration: 350 }), 60)
-  }, [flow, graph.nodes.length, mode, hops, hideIsolated, minStrength, scope])
+    window.setTimeout(() => flow?.fitView({ padding: .24, duration: 350 }), 240)
+  }, [flow, graph.nodes.length, mode, hops, hideIsolated, minStrength, scope, projectId])
 
   const modeEntities = baseEntities
   const selectedEntity = entities.find((entity) => entity.id === selectedNodeId)
@@ -182,7 +234,7 @@ export function StoryGraph() {
   const focusEntity = (entity: Entity) => { setFocusId(entity.id); setSelectedNodeId(entity.id); setSelectedRelationId(''); setQuery(entity.name); window.setTimeout(() => flow?.fitView({ nodes: [{ id: entity.id }], padding: 1.8, duration: 450 }), 60) }
 
   return <div className="graph-page">
-    <div className="graph-toolbar"><div className="graph-toolbar-groups"><div className="segmented">{modes.map(([key, label]) => <button key={key} className={mode === key ? 'active' : ''} onClick={() => { setMode(key); setFocusId(''); setSelectedNodeId(''); setSelectedRelationId('') }}>{label}</button>)}</div>{!['events', 'foreshadowing'].includes(mode) && <div className="segmented"><button className={scope === 'review' ? 'active' : ''} onClick={() => setScope('review')}>候选审阅</button><button className={scope === 'canon' ? 'active' : ''} onClick={() => setScope('canon')}>仅正史</button></div>}</div><div className="graph-legend"><span><i className="positive" />正向</span><span><i className="neutral" />中性</span><span><i className="negative" />冲突</span><span><i className="identity" />同一人身份</span><Button variant="secondary" onClick={analyzeManuscript} disabled={analyzing}>{analyzing ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />} {analyzing ? '同步中…' : '从文稿同步'}</Button>{modeEntities.length > 1 && <Button onClick={() => { setForm({ ...form, fromEntityId: modeEntities[0]?.id || '', toEntityId: modeEntities[1]?.id || '' }); setOpen(true) }}><Plus size={15} /> 新增关系</Button>}</div></div>
+    <div className="graph-toolbar"><div className="graph-toolbar-groups"><div className="segmented">{modes.map(([key, label]) => <button key={key} className={mode === key ? 'active' : ''} onClick={() => { setMode(key); setFocusId(''); setSelectedNodeId(''); setSelectedRelationId('') }}>{label}</button>)}</div>{!['events', 'foreshadowing'].includes(mode) && <div className="segmented"><button className={scope === 'review' ? 'active' : ''} onClick={() => setScope('review')}>候选审阅</button><button className={scope === 'canon' ? 'active' : ''} onClick={() => setScope('canon')}>仅正史</button></div>}</div><div className="graph-legend">{mode === 'characters' && groupResult.meta.map((group) => <span key={group.id}><i className="dot" style={{ background: group.color }} />{group.name}</span>)}<span><i className="positive" />正向</span><span><i className="neutral" />中性</span><span><i className="negative" />冲突</span><span><i className="identity" />同一人身份</span><Button variant="secondary" onClick={analyzeManuscript} disabled={analyzing}>{analyzing ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />} {analyzing ? '同步中…' : '从文稿同步'}</Button>{modeEntities.length > 1 && <Button onClick={() => { setForm({ ...form, fromEntityId: modeEntities[0]?.id || '', toEntityId: modeEntities[1]?.id || '' }); setOpen(true) }}><Plus size={15} /> 新增关系</Button>}</div></div>
     {!['events', 'foreshadowing'].includes(mode) && <div className="graph-filterbar"><div className="graph-search"><Search size={15} /><Input value={query} onChange={(event) => { setQuery(event.target.value); setFocusId('') }} placeholder={`搜索${mode === 'characters' ? '人物或别称' : '节点'}…`} />{searchResults.length > 0 && !focusId && <div className="graph-search-results">{searchResults.map((entity) => <button key={entity.id} onClick={() => focusEntity(entity)}><strong>{entity.name}</strong><span>{displayValue(entity.data?.aliases) || entity.summary || '暂无摘要'}</span></button>)}</div>}</div><div className="graph-filter-controls"><Focus size={15} /><select className="input" value={hops} onChange={(event) => setHops(Number(event.target.value) as 1 | 2)} disabled={!focusId}><option value={1}>一跳关系</option><option value={2}>二跳关系</option></select><label><input type="checkbox" checked={hideIsolated} onChange={(event) => setHideIsolated(event.target.checked)} />隐藏孤立节点</label><label className="strength-filter"><SlidersHorizontal size={14} />强度 ≥ {minStrength}<input type="range" min="0" max="80" step="10" value={minStrength} onChange={(event) => setMinStrength(Number(event.target.value))} /></label>{focusId && <Button variant="ghost" onClick={() => { setFocusId(''); setQuery('') }}><X size={14} /> 清除聚焦</Button>}</div></div>}
     {analyzing && <LoadingState label="正在提取实体、关系、事件与剧情线" />}{analysisNotice && <p className="analysis-notice">{analysisNotice}</p>}
     <section className="graph-canvas">{graph.nodes.length ? <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: .22 }} minZoom={.2} maxZoom={2} onInit={setFlow} onPaneClick={() => { setSelectedNodeId(''); setSelectedRelationId('') }} onNodeClick={(_, node) => { setSelectedNodeId(node.id); setSelectedRelationId('') }} onEdgeClick={(_, edge) => { setSelectedRelationId(edge.id); setSelectedNodeId('') }} onNodeDoubleClick={(_, node) => { const entity = entities.find((item) => item.id === node.id); const event = plot.events.find((item) => item.id === node.id); const chapter = chapters.find((item) => item.id === node.id); navigate(`/memory?q=${encodeURIComponent(entity?.name || event?.title || chapter?.title || '')}`) }}><Background gap={22} size={1} color="#d8d8d1" /><MiniMap pannable zoomable nodeColor={(node) => nodeColors[entities.find((entity) => entity.id === node.id)?.type || ''] || '#89918f'} /><Controls /></ReactFlow> : <div className="graph-empty"><Network size={28} /><strong>这个视图还没有可显示的关系</strong><p>{hideIsolated ? '当前已隐藏孤立节点；可关闭筛选，或从文稿同步并审阅候选关系。' : '导入文稿后运行模型分析，并在设定百科中检查候选条目。'}</p></div>}

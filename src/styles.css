@@ -956,3 +956,4 @@ h1, h2, h3, p { margin: 0; }
 .stat-card span { color: var(--muted); font-size: 10px; display: block; margin: 3px 0 2px; }
 .stat-card p { color: var(--faint); font-size: 9px; margin: 0; line-height: 1.5; }
 @media (max-width: 900px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+.graph-legend i.dot { width: 10px; height: 10px; border-radius: 50%; }
