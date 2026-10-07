@@ -196,6 +196,7 @@ export interface SearchHit {
   score: number
   chapterDistance?: number | null
   reason?: string
+  path?: 'lexical' | 'vector'
 }
 
 export interface ContextReport {
