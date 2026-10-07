@@ -25,4 +25,4 @@ export function ReviewCenter() {
 }
 
 function severityLabel(value: string) { return value === 'high' ? '高风险' : value === 'medium' ? '需确认' : '建议' }
-function categoryLabel(value: string) { return ({ canon: '正史', timeline: '时间线', logic: '逻辑', pov: '视角', structure: '章节', foreshadowing: '伏笔' } as Record<string, string>)[value] || value }
+function categoryLabel(value: string) { return ({ canon: '正史', timeline: '时间线', logic: '逻辑', pov: '视角', structure: '章节', foreshadowing: '伏笔', 'fact-conflict': '事实冲突' } as Record<string, string>)[value] || value }

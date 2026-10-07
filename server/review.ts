@@ -32,6 +32,62 @@ export function precheckChapter(chapterId: string): PrecheckIssue[] {
   return issues
 }
 
+// 候选事实差异提取器：与既有正史或同口径候选冲突的事实不改写任何数据，
+// 只生成审查项交给作者裁决（架构预留边界 5 的落地）。
+// 兼容判定：值完全一致或互相包含视为口径细化，不算冲突。
+const normalizeValue = (value: string) => value.trim().replace(/\s+/g, '').replace(/[。.!！?？~～]+$/, '')
+
+function valuesCompatible(a: string, b: string) {
+  const left = normalizeValue(a)
+  const right = normalizeValue(b)
+  if (!left || !right) return true
+  return left === right || left.includes(right) || right.includes(left)
+}
+
+function factConflicts(projectId: string): Array<{ category: string; severity: string; title: string; description: string; evidence: string[] }> {
+  const rows = sql.all<{ id: string; subject: string; predicate: string; value: string; canon_status: string; chapter_title: string | null }>(
+    `SELECT f.id, f.subject, f.predicate, f.value, f.canon_status, c.title chapter_title FROM story_facts f
+     LEFT JOIN chapters c ON c.id = f.source_chapter_id WHERE f.project_id = ?`, projectId)
+  const groups = new Map<string, typeof rows>()
+  for (const row of rows) {
+    const key = `${normalizeValue(row.subject)}|${normalizeValue(row.predicate)}`
+    const group = groups.get(key)
+    if (group) group.push(row)
+    else groups.set(key, [row])
+  }
+  const issues: Array<{ category: string; severity: string; title: string; description: string; evidence: string[] }> = []
+  for (const group of groups.values()) {
+    if (issues.length >= 40) break
+    if (group.length < 2) continue
+    const canon = group.filter((row) => row.canon_status === 'canon')
+    const candidates = group.filter((row) => row.canon_status === 'candidate')
+    for (const candidate of candidates) {
+      for (const established of canon) {
+        if (valuesCompatible(candidate.value, established.value)) continue
+        issues.push({
+          category: 'fact-conflict', severity: 'high',
+          title: `候选事实与正史冲突：${candidate.subject}·${candidate.predicate}`,
+          description: `正史记载「${established.value}」（来源：${established.chapter_title || '全局资料'}），新候选为「${candidate.value}」（来源：${candidate.chapter_title || '全局资料'}）。候选不会自动改写正史；请确认候选（覆盖口径）或废弃候选。`,
+          evidence: [candidate.id, established.id],
+        })
+      }
+    }
+    if (canon.length) continue
+    for (let i = 0; i < candidates.length; i += 1) {
+      for (let j = i + 1; j < candidates.length; j += 1) {
+        if (valuesCompatible(candidates[i].value, candidates[j].value)) continue
+        issues.push({
+          category: 'fact-conflict', severity: 'medium',
+          title: `候选事实相互分歧：${candidates[i].subject}·${candidates[i].predicate}`,
+          description: `「${candidates[i].value}」（来源：${candidates[i].chapter_title || '全局资料'}）与「${candidates[j].value}」（来源：${candidates[j].chapter_title || '全局资料'}）不一致。可能是不同时间点的状态变化，也可能是提取噪声，请确认当前有效口径。`,
+          evidence: [candidates[i].id, candidates[j].id],
+        })
+      }
+    }
+  }
+  return issues
+}
+
 export function runReview(projectId: string) {
   sql.run('DELETE FROM reviews WHERE project_id = ? AND status = ?', projectId, 'open')
   const issues: Array<{ category: string; severity: string; title: string; description: string; evidence: string[] }> = []
@@ -51,6 +107,7 @@ export function runReview(projectId: string) {
     if (JSON.parse(String(event.participants || '[]')).length === 0) issues.push({ category: 'logic', severity: 'low', title: `事件“${event.title}”没有参与者`, description: '建议至少绑定一名人物或势力，以便进行影响分析。', evidence: [String(event.id)] })
   })
   openForeshadowing.forEach((item) => issues.push({ category: 'foreshadowing', severity: item.status === 'open' ? 'medium' : 'low', title: `伏笔待回收：${item.title}`, description: '该伏笔尚未标记回收。它可能是有意保留，请根据计划确认回收章节。', evidence: [String(item.id)] }))
+  issues.push(...factConflicts(projectId))
 
   issues.forEach((issue) => sql.run('INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', sql.id(), projectId,
     issue.category, issue.severity, issue.title, issue.description, JSON.stringify(issue.evidence), 'open', sql.now()))
