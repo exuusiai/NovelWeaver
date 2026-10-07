@@ -152,11 +152,13 @@ export function StoryGraph() {
     return { nodes, edges }
   }, [baseEntities, relations, mode, plot, chapters, focusId, hops, hideIsolated, minStrength, selectedNodeId, selectedRelationId])
 
-  // 数据异步到达后（节点数从 0 变化）也要重新 fitView，否则画布停在空白视口
+  // 数据异步到达后（节点数从 0 变化）也要重新 fitView，否则画布停在空白视口。
+  // focusId 变化由 focusEntity 自己做节点定向缩放；这里若同时全图 fitView 会与之竞态，
+  // 把聚焦簇缩成针尖，故聚焦状态下跳过。
   useEffect(() => {
-    if (!graph.nodes.length) return
+    if (!graph.nodes.length || focusId) return
     window.setTimeout(() => flow?.fitView({ padding: .24, duration: 350 }), 60)
-  }, [flow, graph.nodes.length, mode, focusId, hops, hideIsolated, minStrength, scope])
+  }, [flow, graph.nodes.length, mode, hops, hideIsolated, minStrength, scope])
 
   const modeEntities = baseEntities
   const selectedEntity = entities.find((entity) => entity.id === selectedNodeId)
