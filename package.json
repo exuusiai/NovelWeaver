@@ -16,6 +16,7 @@
     "eval": "tsx eval/run-eval.ts",
     "eval:baseline": "tsx eval/run-eval.ts --save-baseline",
     "eval:extraction": "tsx eval/run-extraction-eval.ts",
+    "eval:generation": "tsx eval/run-generation-eval.ts",
     "start": "NODE_ENV=production tsx server/index.ts"
   },
   "dependencies": {

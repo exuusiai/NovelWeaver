@@ -1,0 +1,11 @@
+{
+  "savedAt": "2026-10-07T05:27:54.458Z",
+  "model": "DeepSeek-V4.1-Flash",
+  "metrics": {
+    "citationValidRate": 1,
+    "citationCoverage": 0.875,
+    "numberGroundedRate": 1,
+    "completeRate": 1,
+    "avgLatencyMs": 11299
+  }
+}

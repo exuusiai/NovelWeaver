@@ -40,6 +40,7 @@ SQLite FTS5（trigram 中文子串）+ LIKE 兜底 + bm25 + 实体别名扩展 +
 - **行为指标埋点**：生成采纳率（追加/丢弃）、真实 token `usage` 采集用于校准估算器
 - **检索对照实验 → 门控落地**（GLM-Embedding-3，524 块真实语料，见 `eval/reports/`）：实体名锚定查询上词法混合基线全面胜出（Recall@8 100% vs 纯向量 94% vs RRF 融合 83%）；不含实体名的改述查询上纯向量反超（100% vs 89%）。据实验结论实现**查询形态门控检索**：含已知实体名走词法混合，否则走向量语义召回（向量后台增量回填，未配置/覆盖率不足/接口失败均静默回落词法）——生产回测改述查询 Recall@8 89% → **100%**，实体名查询保持 100%
 - **检索降噪**（IDF 词重加权 + 实体共现加成，见 `eval/reports/denoising-experiment-2026-10-07.md`）：逐块噪声构成分析定位两类成因（单实体挤占 80%、泛化二字词误抬），确定性离线修复后真实语料 Top-8 疑似噪声率 34% → **20%**，MRR 0.80 → **0.96**，泛化词噪声清零，Recall 保持 100%
+- **生成接地评测**（`pnpm eval:generation`，走真实网关，见 `eval/reports/generation-霍比特人-2026-10-07.md`）：按系统提示词的生成契约量化四项——引用有效率（`[Rn]` 必须指向上下文快照中真实证据）、引用覆盖率、数字接地率（排除列表序号与中文序数）、完整度；首轮 DeepSeek-V4.1-Flash 上引用有效率 100%（77 个引用）、数字接地率 100%，并暴露 1 例零引用事实结论的 Prompt 依从性问题
 
 | 指标 | 雾港纪事（种子语料） | 首无（22 万字真实语料） | 霍比特人（19 万字） |
 |---|---|---|---|
@@ -87,6 +88,7 @@ pnpm dev            # http://localhost:5173（API 4300，内置"雾港纪事"演
 pnpm test           # 51 个单测 / API / 评测测试
 pnpm eval           # 检索评测报告；pnpm eval:baseline 锁基线
 pnpm eval:extraction  # 霍比特人切分校验 + 提取对照
+pnpm eval:generation  # 生成接地评测（需本地服务与 eval/.api-test.local.json 密钥）
 pnpm build && pnpm start   # 生产模式（默认只监听 127.0.0.1）
 ```
 
@@ -106,7 +108,7 @@ pnpm build && pnpm start   # 生产模式（默认只监听 127.0.0.1）
 ```text
 server/            Express 应用（routes/ 按域拆分）+ importer/analyzer/memory/planner/review/exporter/backup
 src/               React 工作台（9 个页面 + 三栏写作台）
-eval/              金标准 · 提取 ground truth · 基线 · 回归门 · 审查金丝雀 · 内部分析脚本
+eval/              金标准 · 提取 ground truth · 基线 · 回归门 · 审查金丝雀 · 生成接地评测 · 内部分析脚本
 docs/              架构说明与界面截图
 .data/             SQLite 数据库与备份（gitignore）
 ```
