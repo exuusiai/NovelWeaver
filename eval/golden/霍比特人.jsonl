@@ -1,0 +1,20 @@
+{"query": "梭林·橡木盾和铁丘陵的矮人是什么关系", "expectAll": ["梭林", "铁丘陵"], "category": "relation", "note": "首领与后援"}
+{"query": "瑟罗尔是被谁杀死的", "expectAll": ["瑟罗尔", "阿佐格"], "category": "relation", "note": "祖孙仇怨"}
+{"query": "谁解读了地图上的月亮文字", "expectAll": ["埃尔隆德", "月亮文字"], "category": "relation", "note": "精灵之友"}
+{"query": "巴林和杜瓦林是什么关系", "expectAll": ["巴林", "杜瓦林"], "category": "relation", "note": "兄弟"}
+{"query": "比尔博把阿肯宝钻交给了谁", "expectAll": ["比尔博", "阿肯宝钻"], "category": "relation", "note": "谈判筹码"}
+{"query": "C·S·刘易斯和霍比特人手稿有什么渊源", "expectAll": ["刘易斯", "手稿"], "category": "relation", "note": "出版史"}
+{"query": "雷纳·昂温为这本书写过什么", "expectAll": ["雷纳", "报告"], "category": "relation", "note": "读者报告"}
+{"query": "甘道夫在山中的洞穴里救出了谁", "expectAll": ["甘道夫", "比尔博"], "category": "relation", "note": "魔法救援"}
+{"query": "托尔金在牛津担任什么工作", "expectAll": ["托尔金", "牛津"], "category": "relation", "note": "作者背景"}
+{"query": "阿肯宝钻是什么东西", "expectAny": ["阿肯宝钻"], "category": "entity", "note": "核心宝物"}
+{"query": "巴德用什么武器射中了斯毛格", "expectAll": ["巴德", "斯毛格"], "category": "relation", "note": "屠龙一击"}
+{"query": "画眉鸟在恶龙之死中起了什么作用", "expectAny": ["画眉鸟"], "category": "plotline", "note": "提示者"}
+{"query": "恶龙的身体哪里有弱点", "expectAny": ["左胸"], "category": "plotline", "note": "致命处"}
+{"query": "斯毛格袭击了哪座城镇", "expectAny": ["长湖镇"], "category": "plotline", "note": "屠龙后续"}
+{"query": "五军之战的参战方有哪些", "expectAny": ["五军之战"], "category": "plotline", "note": "终战"}
+{"query": "半兽人阿佐格的结局是什么", "expectAny": ["阿佐格"], "category": "plotline", "note": "宿敌"}
+{"query": "斯坦利·昂温为什么要托尔金写续篇", "expectAll": ["斯坦利", "续篇"], "category": "relation", "note": "出版决策"}
+{"query": "幽谷的主人是谁", "expectAny": ["幽谷"], "category": "general", "note": "地点"}
+{"query": "比尔博在地下洞穴里捡到了什么", "expectAny": ["魔戒", "戒指"], "category": "general", "note": "关键物品"}
+{"query": "矮人远征队的目的是什么", "expectAny": ["孤山", "宝藏"], "category": "general", "note": "主线动机"}

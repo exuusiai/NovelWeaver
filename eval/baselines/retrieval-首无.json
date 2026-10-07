@@ -1,10 +1,10 @@
 {
-  "savedAt": "2026-10-07T05:14:42.489Z",
+  "savedAt": "2026-10-07T05:57:19.893Z",
   "metrics": {
-    "recallAt5": 1,
-    "recallAt8": 1,
-    "recallAt16": 1,
-    "mrr": 0.963,
-    "noiseRatioTop8": 0.201
+    "recallAt5": 0.875,
+    "recallAt8": 0.95,
+    "recallAt16": 0.975,
+    "mrr": 0.74,
+    "noiseRatioTop8": 0.409
   }
 }

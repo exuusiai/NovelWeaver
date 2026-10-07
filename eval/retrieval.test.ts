@@ -10,6 +10,7 @@ const TOLERANCE = 0.02
 const gates = [
   { project: '雾港纪事', required: true },
   { project: '首无', required: false },
+  { project: '霍比特人', required: false },
 ]
 
 describe('检索质量回归门', () => {

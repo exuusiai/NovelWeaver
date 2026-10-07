@@ -16,3 +16,25 @@
 {"query": "高屋敷为什么坚持调查秘守家", "expectAll": ["高屋敷", "秘守家"], "category": "logic", "note": "调查动机"}
 {"query": "长寿郎的尸体会怎样处理", "expectAll": ["长寿郎", "尸"], "category": "logic", "note": "尸体处理逻辑"}
 {"query": "兵堂为什么隐瞒十三夜参礼的秘密", "expectAll": ["兵堂", "十三夜参礼"], "category": "logic", "note": "隐瞒动机"}
+{"query": "古里毬子和江川兰子是什么关系", "expectAll": ["毬子", "兰子"], "category": "relation", "note": "秘书与真凶"}
+{"query": "谁最后见到了进山的斧高", "expectAll": ["甲子", "斧高"], "category": "relation", "note": "最后目击"}
+{"query": "溜吉从井里捞出了什么", "expectAll": ["溜吉", "长发"], "category": "plotline", "note": "井中异状"}
+{"query": "纮弌为什么缺席婚舍集会", "expectAll": ["纮弌", "征兵"], "category": "relation", "note": "学徒出阵"}
+{"query": "二见离开村子前留下了什么", "expectAll": ["二见", "警棍"], "category": "relation", "note": "遗物"}
+{"query": "斩杀阿淡的人后来怎么样了", "expectAll": ["德之真", "阿淡"], "category": "plotline", "note": "传说溯源"}
+{"query": "阿武隈川乌和刀城言耶是什么关系", "expectAll": ["武隈", "刀城"], "category": "relation", "note": "前辈同行"}
+{"query": "竹子和纮弌是什么关系", "expectAll": ["竹子", "纮弌"], "category": "relation", "note": "长女长兄"}
+{"query": "华子的父亲是谁", "expectAll": ["华子", "克棋"], "category": "relation", "note": "三守家血脉"}
+{"query": "富贵夫人说了什么暴露她早有准备", "expectAll": ["富贵", "长寿郎"], "category": "logic", "note": "口误伏笔"}
+{"query": "南鸟居口当值的巡警是谁", "expectAll": ["佐伯", "南鸟居口"], "category": "relation", "note": "岗位人物"}
+{"query": "三守家的女儿里谁没列入新娘候选", "expectAll": ["桃子", "新娘"], "category": "relation", "note": "候选争议"}
+{"query": "三枝和古里家是什么关系", "expectAll": ["三枝", "古里"], "category": "relation", "note": "姻亲脉络"}
+{"query": "江川兰子这个笔名的来源是什么", "expectAll": ["兰子", "乱步"], "category": "relation", "note": "笔名致敬"}
+{"query": "横沟正史在哪些杂志上连载作品", "expectAll": ["横沟正史", "宝石"], "category": "relation", "note": "时代背景"}
+{"query": "二守家现在的户主是谁", "expectAll": ["纮达", "户主"], "category": "relation", "note": "家系结构"}
+{"query": "纮达的妻子是哪一位夫人", "expectAll": ["纮达", "笛子"], "category": "relation", "note": "婚配关系"}
+{"query": "媛首山的祭祀入口叫什么", "expectAny": ["鸟居口"], "category": "general", "note": "地点结构"}
+{"query": "那支特制警棍最后到了谁手里", "expectAll": ["警棍", "高屋敷"], "category": "plotline", "note": "物件流转"}
+{"query": "古里毬子得手之后如何脱身", "expectAll": ["毬子", "冒充"], "category": "logic", "note": "第二重解答"}
+{"query": "《怪诞》同人圈里谁在写耽美小说", "expectAll": ["郁子", "耽美"], "category": "relation", "note": "圈内身份"}
+{"query": "克棋为什么没有出现在婚舍集会", "expectAll": ["克棋", "捐躯"], "category": "logic", "note": "缺席原因"}
