@@ -46,7 +46,7 @@ function cacheSet<T>(cache: Map<string, T>, key: string, value: T, max: number) 
   if (cache.size > max) cache.delete(cache.keys().next().value as string)
 }
 
-function baseTerms(query: string) {
+export function baseTerms(query: string) {
   const chunks = query.trim().split(/[\s，。！？、；：,.;:!?（）()【】\[\]"'“”]+/).filter((item) => item.length > 1)
   return [...new Set(chunks.flatMap((chunk) => {
     if (!/[\u3400-\u9fff]/.test(chunk) || chunk.length <= 4) return [chunk]
@@ -56,10 +56,10 @@ function baseTerms(query: string) {
   }))].slice(0, 24)
 }
 
-function expandedTerms(projectId: string, query: string): { terms: string[]; entityMatches: number } {
+export function expandedTerms(projectId: string, query: string): { terms: string[]; entityNames: string[] } {
   const terms = new Set(baseTerms(query))
   const normalizedQuery = normalize(query)
-  let entityMatches = 0
+  const entityNames: string[] = []
   const entities = sql.all<{ name: string; data: string }>('SELECT name, data FROM entities WHERE project_id = ?', projectId)
   for (const entity of entities) {
     let aliases: string[] = []
@@ -70,10 +70,10 @@ function expandedTerms(projectId: string, query: string): { terms: string[]; ent
     const names = [entity.name, ...aliases].filter(Boolean)
     if (names.some((name) => normalizedQuery.includes(normalize(name)))) {
       names.forEach((name) => terms.add(name))
-      entityMatches += 1
+      entityNames.push(String(entity.name))
     }
   }
-  return { terms: [...terms].slice(0, 32), entityMatches }
+  return { terms: [...terms].slice(0, 32), entityNames }
 }
 
 function chapterPosition(chapterId?: string) {
@@ -84,6 +84,26 @@ function chapterPosition(chapterId?: string) {
 function distanceWeight(distance: number | null) {
   if (distance === null) return 0.82
   return 1 / (1 + 0.3 * Math.log(1 + distance))
+}
+
+// 词项在语料中的稀有度决定其计分权重：出现于 35% 以上记忆块的泛化词
+// （"什么""出现"这类高频二字组合）线性压到 0.15 倍，专名与低频实词保持原权。
+// 没有 IDF 时，泛化词与专名按字符数等权计分，是 Top-8 噪声的主要来源之一。
+function idfFactor(df: number, total: number) {
+  const ratio = df / Math.max(1, total)
+  if (ratio <= 0.35) return 1
+  return Math.max(0.15, 1 - ((ratio - 0.35) / 0.65) * 0.85)
+}
+
+const dfCache = new Map<string, number>()
+function chunkDf(projectId: string, version: string, term: string): number {
+  const key = `${version}:${term}`
+  const cached = dfCache.get(key)
+  if (cached !== undefined) return cached
+  const like = `%${term}%`
+  const df = sql.get<{ n: number }>('SELECT COUNT(*) n FROM memory_chunks WHERE project_id = ? AND (content LIKE ? OR summary LIKE ? OR keywords LIKE ?)', projectId, like, like, like)?.n ?? 0
+  cacheSet(dfCache, key, df, 4000)
+  return df
 }
 
 export interface EntityState {
@@ -123,14 +143,16 @@ export function deriveEntityStates(projectId: string, beforePosition?: number): 
 // name-free paraphrase queries by pure vectors (round 2: 100% vs 89%). Blind RRF fusion
 // lost in both regimes, so this is an either/or gate, not a blend.
 export async function searchMemory(projectId: string, query: string, limit = 12, currentChapterId?: string): Promise<SearchHit[]> {
+  const version = projectVersion(projectId)
   // 覆盖率进缓存键：向量回填会改变可用索引但不动 projectVersion，缺少这一位
   // 会让回填后的查询继续命中回填前的词法缓存。
-  const cacheKey = `${projectVersion(projectId)}:${currentChapterId || ''}:${limit}:${normalize(query)}:${projectEmbeddingCoverage(projectId).toFixed(2)}`
+  const cacheKey = `${version}:${currentChapterId || ''}:${limit}:${normalize(query)}:${projectEmbeddingCoverage(projectId).toFixed(2)}`
   const cached = searchCache.get(cacheKey)
   if (cached) return cached
-  const { terms: queryTerms, entityMatches } = expandedTerms(projectId, query)
+  const { terms: queryTerms, entityNames } = expandedTerms(projectId, query)
   if (!queryTerms.length) return []
   const total = sql.get<{ count: number }>('SELECT COUNT(*) count FROM chapters WHERE project_id = ?', projectId)?.count ?? 0
+  const chunkTotal = sql.get<{ n: number }>('SELECT COUNT(*) n FROM memory_chunks WHERE project_id = ?', projectId)?.n ?? 0
   const candidateLimit = Math.min(Math.max(50, total * 3), 500)
   const currentPosition = chapterPosition(currentChapterId)
   const candidates = new Map<string, Record<string, unknown> & { rank?: number }>()
@@ -158,15 +180,21 @@ export async function searchMemory(projectId: string, query: string, limit = 12,
   }
 
   const positions = new Map(sql.all<{ id: string; position: number }>('SELECT id, position FROM chapters WHERE project_id = ?', projectId).map((row) => [row.id, row.position]))
+  const termWeight = (term: string) => Math.min(term.length, 8) * idfFactor(chunkDf(projectId, version, term), chunkTotal)
+  const denominator = Math.max(8, queryTerms.slice(0, 8).reduce((sum, term) => sum + termWeight(term), 0))
   const hits = [...candidates.values()].map((row) => {
     const haystack = normalize(`${row.summary} ${row.keywords} ${row.content}`)
     const matched = queryTerms.filter((term) => haystack.includes(normalize(term)))
-    const lexical = Math.min(1, matched.reduce((sum, term) => sum + Math.min(term.length, 8), 0) / Math.max(8, queryTerms.slice(0, 8).reduce((sum, term) => sum + Math.min(term.length, 8), 0)))
+    const lexical = Math.min(1, matched.reduce((sum, term) => sum + termWeight(term), 0) / denominator)
     const rank = typeof row.rank === 'number' ? 1 / (1 + Math.abs(row.rank)) : 0.35
     const rowPosition = row.chapter_id ? positions.get(String(row.chapter_id)) : undefined
     const distance = currentPosition === undefined || rowPosition === undefined ? null : Math.abs(currentPosition - rowPosition)
     const proximity = distanceWeight(distance)
-    const score = Math.min(1, lexical * 0.48 + rank * 0.26 + proximity * 0.16 + Number(row.importance) / 1000)
+    // 关系类查询命中 ≥2 个已知实体时，只有多实体共现块才是关系证据；
+    // 单实体块曾占首无语料 Top-8 噪声的八成，共现加成把它们压出证据区。
+    const presentEntities = entityNames.filter((name) => haystack.includes(normalize(name))).length
+    const pairBonus = entityNames.length >= 2 ? Math.max(0, Math.min(2, presentEntities - 1)) * 0.14 : 0
+    const score = Math.min(1, lexical * 0.48 + rank * 0.26 + proximity * 0.16 + Number(row.importance) / 1000 + pairBonus)
     return {
       id: String(row.id), sourceType: String(row.source_type), sourceId: String(row.source_id),
       chapterId: row.chapter_id ? String(row.chapter_id) : null, content: String(row.content),
@@ -181,7 +209,7 @@ export async function searchMemory(projectId: string, query: string, limit = 12,
 
   // 向量门控：仅在查询不含任何已知实体名、向量模型就绪且该项目覆盖率达标时启用。
   let finalHits: SearchHit[] = lexicalHits
-  if (entityMatches === 0 && getEmbeddingModel()) {
+  if (entityNames.length === 0 && getEmbeddingModel()) {
     try {
       if (projectEmbeddingCoverage(projectId) >= MIN_EMBEDDING_COVERAGE) {
         const queryVector = await embedQuery(query)
