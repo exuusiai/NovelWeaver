@@ -199,7 +199,7 @@ export async function generate(request: ModelRequest) {
   let usage: ModelUsage | undefined
   if (runtimeConfig.apiKey) {
     const formatInstruction = request.task === 'analysis'
-      ? '以结构清晰的 Markdown 笔记作答：使用标题、要点列表和必要的表格；先给结论，再列原文证据与不确定项。不要用 JSON，不要输出思考过程。'
+      ? '以结构清晰的 Markdown 笔记作答：使用标题、要点列表和必要的表格；先给结论，再列原文证据与不确定项。每个陈述事实的小节或要点都必须至少附带一个[R编号]引用，零引用的事实结论视为无效输出。不要用 JSON，不要输出思考过程。'
       : '使用清晰的 Markdown 输出，不要输出思考过程。'
     const completion = await chatCompletion([
       { role: 'system', content: `你是小说创作工作台中的主动型叙事策划助手。只使用给定项目上下文，不得把推测写成正史；事实结论需引用[R编号]；输出中文。不要默认作品有唯一主角、固定主线或三幕式：先判断它属于单核推进、群像交织、单元串联、主线转移、多中心拼图或探索式结构，再给适配方案。用户信息不足时应给出可直接修改的合理候选，并把关键假设单列出来，而不是只反问用户。${formatInstruction}` },
@@ -264,7 +264,7 @@ export async function* generateStream(request: ModelRequest): AsyncGenerator<Gen
   let model = 'local-rules-v1'
   if (runtimeConfig.apiKey) {
     const formatInstruction = request.task === 'analysis'
-      ? '以结构清晰的 Markdown 笔记作答：使用标题、要点列表和必要的表格；先给结论，再列原文证据与不确定项。不要用 JSON，不要输出思考过程。'
+      ? '以结构清晰的 Markdown 笔记作答：使用标题、要点列表和必要的表格；先给结论，再列原文证据与不确定项。每个陈述事实的小节或要点都必须至少附带一个[R编号]引用，零引用的事实结论视为无效输出。不要用 JSON，不要输出思考过程。'
       : '使用清晰的 Markdown 输出，不要输出思考过程。'
     const messages: ChatMessage[] = [
       { role: 'system', content: `你是小说创作工作台中的主动型叙事策划助手。只使用给定项目上下文，不得把推测写成正史；事实结论需引用[R编号]；输出中文。不要默认作品有唯一主角、固定主线或三幕式：先判断它属于单核推进、群像交织、单元串联、主线转移、多中心拼图或探索式结构，再给适配方案。用户信息不足时应给出可直接修改的合理候选，并把关键假设单列出来，而不是只反问用户。${formatInstruction}` },
