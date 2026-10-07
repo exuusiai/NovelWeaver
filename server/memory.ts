@@ -22,6 +22,28 @@ type AssembledContext = { text: string; hits: SearchHit[]; report: ContextReport
 const searchCache = new Map<string, SearchHit[]>()
 const contextCache = new Map<string, AssembledContext>()
 
+// 向量召回缓存：每查询全表加载并 JSON.parse embedding 在万块级语料下是主要瓶颈；
+// 以 projectVersion 为失效键缓存解析后的向量矩阵（不含 content，命中后仍按需取原文）。
+interface VectorRow { id: string; chapterId: string | null; sourceType: string; sourceId: string; content: string; summary: string; keywords: string; importance: number; vector: number[] }
+const vectorCache = new Map<string, { version: string; rows: VectorRow[] }>()
+
+function projectVectors(projectId: string, version: string): VectorRow[] {
+  const cached = vectorCache.get(projectId)
+  if (cached && cached.version === version) return cached.rows
+  const rows = sql.all<{ id: string; chapter_id: string | null; source_type: string; source_id: string; content: string; summary: string; keywords: string; importance: number; embedding: string }>(
+    "SELECT id, chapter_id, source_type, source_id, content, summary, keywords, importance, embedding FROM memory_chunks WHERE project_id = ? AND embedding != ''", projectId)
+  const parsed: VectorRow[] = []
+  for (const row of rows) {
+    try {
+      const vector = JSON.parse(row.embedding) as number[]
+      if (!vector.length) continue
+      parsed.push({ id: row.id, chapterId: row.chapter_id, sourceType: row.source_type, sourceId: row.source_id, content: row.content, summary: row.summary, keywords: row.keywords, importance: row.importance, vector })
+    } catch { /* corrupted embedding rows stay out of the index until re-backfill */ }
+  }
+  cacheSet(vectorCache, projectId, { version, rows: parsed }, 8)
+  return parsed
+}
+
 // CJK chars tokenize to roughly one token each on mainstream models; latin text ~4 chars/token.
 // The old length/2.2 heuristic underestimated Chinese-heavy context by 1.5-4x and blew the budget.
 const cjpPattern = /[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]/g
@@ -213,23 +235,16 @@ export async function searchMemory(projectId: string, query: string, limit = 12,
     try {
       if (projectEmbeddingCoverage(projectId) >= MIN_EMBEDDING_COVERAGE) {
         const queryVector = await embedQuery(query)
-        const rows = sql.all<{ id: string; chapter_id: string | null; source_type: string; source_id: string; content: string; summary: string; keywords: string; importance: number; embedding: string }>(
-          "SELECT id, chapter_id, source_type, source_id, content, summary, keywords, importance, embedding FROM memory_chunks WHERE project_id = ? AND embedding != ''", projectId)
-        const vectorHits = rows
-          .map((row) => {
-            let vector: number[] = []
-            try { vector = JSON.parse(row.embedding) as number[] } catch { /* corrupted row falls back below */ }
-            return { row, score: vector.length ? (cosine(queryVector, vector) + 1) / 2 : -1 }
-          })
-          .filter((item) => item.score >= 0)
+        const vectorHits = projectVectors(projectId, version)
+          .map(({ vector, ...row }) => ({ row, score: (cosine(queryVector, vector) + 1) / 2 }))
           .sort((a, b) => b.score - a.score)
           .slice(0, limit)
           .map(({ row, score }) => {
-            const rowPosition = row.chapter_id ? positions.get(String(row.chapter_id)) : undefined
+            const rowPosition = row.chapterId ? positions.get(String(row.chapterId)) : undefined
             const distance = currentPosition === undefined || rowPosition === undefined ? null : Math.abs(currentPosition - rowPosition)
             return {
-              id: String(row.id), sourceType: String(row.source_type), sourceId: String(row.source_id),
-              chapterId: row.chapter_id ? String(row.chapter_id) : null, content: String(row.content),
+              id: String(row.id), sourceType: String(row.sourceType), sourceId: String(row.sourceId),
+              chapterId: row.chapterId ? String(row.chapterId) : null, content: String(row.content),
               summary: String(row.summary), keywords: String(row.keywords),
               score: Number(score.toFixed(3)), chapterDistance: distance,
               reason: '向量语义召回', path: 'vector' as const,
@@ -281,6 +296,19 @@ export async function assembleContext(projectId: string, prompt: string, chapter
     return { row, meta, matched, pinned, index, rank: (matched ? 100 : 0) + (pinned ? 80 : 0) + Number(meta.contextPriority || 50) / 10 + Number(row.confidence || 0) }
   }).filter((item) => (item.matched || item.pinned || item.index < 8) && (!item.meta.contextScope || item.meta.contextScope !== 'manual' || item.matched || item.pinned))
     .sort((a, b) => b.rank - a.rank).slice(0, 18)
+  // 一跳关系邻居：多跳问题（"A 的哥哥的敌人"）无法靠词法/向量直接命中，
+  // 从 relations 表为已入选实体补一跳图结构上下文；已在资料卡中的邻居跳过。
+  const selectedIds = entities.map((item) => String(item.row.id))
+  let neighbors: Array<{ name: string; entity_type: string; summary: string; canon_status: string; rel_type: string; rel_label: string; sentiment: string; strength: number; from_name: string }> = []
+  if (selectedIds.length) {
+    const placeholders = selectedIds.map(() => '?').join(',')
+    neighbors = sql.all(`SELECT e.name, e.type entity_type, e.summary, e.canon_status, r.type rel_type, r.label rel_label, r.sentiment, r.strength, f.name from_name
+      FROM relations r
+      JOIN entities f ON f.id = r.from_entity_id
+      JOIN entities e ON e.id = CASE WHEN r.from_entity_id IN (${placeholders}) THEN r.to_entity_id ELSE r.from_entity_id END
+      WHERE (r.from_entity_id IN (${placeholders}) OR r.to_entity_id IN (${placeholders})) AND e.project_id = ? AND e.id NOT IN (${placeholders})
+      ORDER BY r.strength DESC LIMIT 6`, [...selectedIds, ...selectedIds, ...selectedIds, projectId, ...selectedIds])
+  }
   const currentPosition = typeof chapter?.position === 'number' ? Number(chapter.position) : undefined
   const states = deriveEntityStates(projectId, currentPosition).filter((state) => referenceText.includes(normalize(state.name)) || normalize(state.name) === normalize(String(chapter?.pov || '')))
     .slice(0, 8)
@@ -308,6 +336,9 @@ export async function assembleContext(projectId: string, prompt: string, chapter
       return make('card', `资料卡：${row.name}`, `【资料卡/${row.type}/${row.canon_status}】${row.name}：${row.summary}`, 45 + priority / 2, matched ? 25 : 0)
     }),
     ...events.map((row) => make('event', `事件：${row.title}`, `【事件】${row.story_time || ''} ${row.title}：${row.summary}`, 48)),
+    ...neighbors.map((row) => make('neighbor', `关系邻居：${row.name}`,
+      `【关系邻居/${row.canon_status}】${row.from_name} —${row.rel_label || row.rel_type}→ ${row.name}（${row.entity_type}）：${row.summary}`,
+      44, 8 + row.strength / 10)),
     ...hits.map((hit, index) => make('evidence', `R${index + 1}：${hit.summary || hit.sourceType}`, `[R${index + 1}] ${hit.summary || hit.content.slice(0, 260)}`, 55, hit.score * 35)),
   ]
   const picked = pickWithinBudget(items, tokenBudget)
