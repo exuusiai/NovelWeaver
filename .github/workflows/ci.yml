@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+        env:
+          NOVELWEAVER_DATA_DIR: ':memory:'
+      - run: pnpm build
+      # 检索回归门（雾港纪事种子语料，随 :memory: 演示数据复现）
+      - run: pnpm eval
+        env:
+          NOVELWEAVER_DATA_DIR: ':memory:'

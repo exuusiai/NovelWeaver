@@ -5,7 +5,7 @@ dist/
 .DS_Store
 *.log
 coverage/
-releases/
+releases/*.tar.gz
 测试用文稿/
 eval/.api-test.local.json
 eval/.cache-embeddings-*.json
