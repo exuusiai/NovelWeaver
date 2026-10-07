@@ -141,13 +141,22 @@ export function StoryGraph() {
       const dy = to.y - from.y
       return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'r' : 'l') : (dy > 0 ? 'b' : 't')
     }
+    // 密集语料（首无 51 条关系）里两类线重叠最伤可读性：同一对节点的平行关系
+    // 以相同贝塞尔几何完全重合；不同对的边共享锚段时近段重合。前者按组内序号
+    // 递增曲率扇出，后者用 id 哈希做微小曲率差，配合收窄线宽降低交叉的视觉重量。
+    const pairSeen = new Map<string, number>()
+    const hashCurvature = (id: string) => { let hash = 0; for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) % 997; return 0.16 + (hash % 4) * 0.05 }
     const edges: Edge[] = visibleRelations.map((relation) => {
       const identity = relation.type === 'same_person' || relation.type === 'identity_of'
       const selected = relation.id === selectedRelationId
       const color = identity ? '#735b8e' : relation.sentiment === 'negative' ? '#b65745' : relation.sentiment === 'positive' ? '#14746f' : '#89918f'
       const fromPos = positions.get(relation.from_entity_id) || { x: 0, y: 0 }
       const toPos = positions.get(relation.to_entity_id) || { x: 0, y: 0 }
-      return { id: relation.id, source: relation.from_entity_id, target: relation.to_entity_id, sourceHandle: handleFor(fromPos, toPos), targetHandle: handleFor(toPos, fromPos), type: 'default', label: identity || showLabels ? relation.label || relation.type : undefined, zIndex: selected ? 3 : 0, style: { stroke: color, strokeWidth: selected ? 4 : Math.max(identity ? 2.2 : 1, Math.min(3, relation.strength / 35)), strokeDasharray: identity ? '8 5' : undefined }, labelStyle: { fontSize: 10, fontWeight: identity ? 700 : 500, fill: color }, labelBgStyle: { fill: '#f8f7f3', fillOpacity: .95 } }
+      const pairKey = [relation.from_entity_id, relation.to_entity_id].sort().join('~')
+      const parallelIndex = pairSeen.get(pairKey) ?? 0
+      pairSeen.set(pairKey, parallelIndex + 1)
+      const curvature = parallelIndex === 0 ? hashCurvature(relation.id) : Math.min(.9, .34 + parallelIndex * .24)
+      return { id: relation.id, source: relation.from_entity_id, target: relation.to_entity_id, sourceHandle: handleFor(fromPos, toPos), targetHandle: handleFor(toPos, fromPos), type: 'default', pathOptions: { curvature }, label: identity || showLabels ? relation.label || relation.type : undefined, zIndex: selected ? 3 : 0, style: { stroke: color, strokeWidth: selected ? 3.5 : Math.max(identity ? 2 : 1, Math.min(2.4, relation.strength / 45)), opacity: selected || identity ? 1 : .85, strokeDasharray: identity ? '8 5' : undefined }, labelStyle: { fontSize: 10, fontWeight: identity ? 700 : 500, fill: color }, labelBgStyle: { fill: '#f8f7f3', fillOpacity: .95 } }
     })
     return { nodes, edges }
   }, [baseEntities, relations, mode, plot, chapters, focusId, hops, hideIsolated, minStrength, selectedNodeId, selectedRelationId])
