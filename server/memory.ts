@@ -260,6 +260,29 @@ export async function searchMemory(projectId: string, query: string, limit = 12,
   return finalHits
 }
 
+// 全书宏观记忆：超长作品"越写越散"的根因是生成上下文只有章节/实体/事件粒度，
+// 缺少全书层视角。这里从结构化数据确定性拼装一个紧凑块（卷结构、未回收伏笔、体量进度），
+// 不经模型、不产生幻觉，注入 assembleContext 使每次生成都带着全书坐标系。
+export function buildMacroMemory(projectId: string): string {
+  const project = sql.get<{ name: string; genre: string; premise: string; word_goal: number }>('SELECT name, genre, premise, word_goal FROM projects WHERE id = ?', projectId)
+  if (!project) return ''
+  const stats = sql.get<{ n: number; chars: number }>('SELECT COUNT(*) n, COALESCE(SUM(LENGTH(TRIM(content))), 0) chars FROM chapters WHERE project_id = ?', projectId) ?? { n: 0, chars: 0 }
+  const sections: string[] = [`【全书概览】《${project.name}》${project.genre ? `· ${project.genre}` : ''} · 共 ${stats.n} 章 / ${stats.chars.toLocaleString()} 字${project.word_goal ? `（目标 ${project.word_goal.toLocaleString()}）` : ''}`]
+  const volumes = sql.all<{ title: string; summary: string; chapters: number }>(
+    `SELECT v.title, v.summary, (SELECT COUNT(*) FROM chapter_volume_bindings b WHERE b.volume_id = v.id) chapters
+     FROM volumes v WHERE v.project_id = ? ORDER BY v.order_index LIMIT 6`, projectId)
+  if (volumes.length) {
+    sections.push(`【卷结构】${volumes.map((volume) => `${volume.title}${volume.summary ? `：${volume.summary.slice(0, 60)}` : ''}（${volume.chapters} 章）`).join('；')}`)
+  }
+  const openForeshadowing = sql.all<{ title: string; position: number | null }>(
+    `SELECT f.title, c.position FROM foreshadowing f LEFT JOIN chapters c ON c.id = f.setup_chapter_id
+     WHERE f.project_id = ? AND f.status != 'resolved' ORDER BY c.position LIMIT 8`, projectId)
+  if (openForeshadowing.length) {
+    sections.push(`【未回收伏笔】${openForeshadowing.map((item) => `${item.title}${item.position !== null ? `（第 ${item.position + 1} 章埋设）` : ''}`).join('；')}`)
+  }
+  return sections.join('\n')
+}
+
 function pickWithinBudget(items: ContextItem[], budget: number) {
   const included: ContextItem[] = []
   const trimmed: ContextItem[] = []
@@ -325,6 +348,7 @@ export async function assembleContext(projectId: string, prompt: string, chapter
   const make = (kind: string, label: string, text: string, priority: number, relevance = 0): ContextItem => ({ kind, label, text, priority, relevance, tokens: estimateTokens(text) })
   const items: ContextItem[] = [
     make('project', '项目基线', `【项目】${project?.name ?? ''}\n题材：${project?.genre ?? ''}\n核心命题：${project?.premise ?? ''}`, 100),
+    ...(() => { const macro = buildMacroMemory(projectId); return macro ? [make('macro', '全书概览', macro, 90)] : [] })(),
     ...(chapter ? [make('chapter', `当前章节：${chapter.title}`, `【当前章节】${chapter.title}\n视角：${chapter.pov}\n摘要：${chapter.summary}\n正文末尾：${String(chapter.content).slice(-1800)}`, 98)] : []),
     ...states.map((state) => make('state', `人物状态：${state.name}`,
       `【人物状态】${state.name}：最近事件「${state.lastEvent}」${state.lastTime ? `（${state.lastTime}）` : ''}${state.lastLocation ? `@${state.lastLocation}` : ''}；累计参与 ${state.eventCount} 个事件。此后未再出场，不要让其知晓之后发生的事。`, 92)),
