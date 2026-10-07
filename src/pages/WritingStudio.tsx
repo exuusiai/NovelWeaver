@@ -302,7 +302,7 @@ export function WritingStudio() {
       <div className="agent-result">{currentResult ? <>
         {variants.length > 1 && <div className="variant-tabs">{variants.map((item, index) => <button key={index} className={index === activeVariant ? 'active' : ''} onClick={() => setActiveVariant(index)}>{variantLabel(index)}</button>)}<Button variant="ghost" className="variant-clear" onClick={discardVariants} disabled={generating}>丢弃全部</Button></div>}
         <div className="result-meta"><span>{currentResult.model || (generating ? '正在生成…' : '')}</span><span>{currentResult.citations.length} 条记忆证据</span></div>
-        <MarkdownLike text={currentResult.output || (generating ? '…' : '')} />
+        <MarkdownLike text={currentResult.output || (generating ? '…' : '')} citations={currentResult.citations} />
         <Button variant="secondary" onClick={appendResult} disabled={generating || !currentResult.output.trim()}>追加「{variantLabel(activeVariant)}」到正文</Button>
       </> : <div className="agent-placeholder"><Sparkles size={22} /><p>生成结果会出现在这里。可生成多个版本并排对比，再挑选追加。所有新增事实仍需在审查台确认。</p></div>}</div>
     </aside> : <button className="open-ai-panel" onClick={() => setPanelOpen(true)} title="打开创作 Agent"><Sparkles size={19} /></button>}

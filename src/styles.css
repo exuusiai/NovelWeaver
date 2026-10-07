@@ -152,6 +152,8 @@ h1, h2, h3, p { margin: 0; }
 .modal-body { padding: 20px; }
 .modal > footer { min-height: 58px; border-top: 1px solid var(--line); padding: 11px 18px; display: flex; justify-content: flex-end; gap: 8px; }
 .generated-content { font-size: 11px; line-height: 1.75; color: #38413f; overflow-wrap: anywhere; }
+.generated-content .ref-chip { color: var(--teal); font-weight: 700; cursor: help; border-bottom: 1px dashed rgba(17, 110, 104, .45); padding: 0 1px; border-radius: 2px; transition: background-color var(--anim), color var(--anim); }
+.generated-content .ref-chip:hover { background: var(--teal-soft); }
 .generated-content h1 { font-family: Georgia, "Songti SC", serif; font-size: 19px; color: #203f3b; margin: 14px 0 7px; }
 .generated-content h2 { font-family: Georgia, "Songti SC", serif; font-size: 16px; color: #254541; margin: 12px 0 6px; }
 .generated-content h3 { font-size: 13px; color: #18655f; margin: 10px 0 4px; }

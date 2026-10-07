@@ -36,6 +36,42 @@ export function LoadingState({ label = '正在处理' }: { label?: string }) {
   return <div className="loading-state" role="status"><Loader2 className="spin" size={18} /><span>{label}</span><i><b /><b /><b /></i></div>
 }
 
-export function MarkdownLike({ text }: { text: string }) {
+type HastNode = { type: string; value?: string; tagName?: string; properties?: Record<string, unknown>; children?: HastNode[] }
+
+// 把正文中的 [Rn] 标记替换为可悬停的引用芯片：title 提示对应证据的摘要与原文片段，
+// 编号越界时明确提示"不在上下文快照中"，让伪造接地在前端即可辨识。
+function rehypeCitationChips(summaries: string[]) {
+  const pattern = /\[R(\d+)\]/g
+  const walk = (node: HastNode) => {
+    if (!node.children) return
+    node.children = node.children.flatMap((child) => {
+      if (child.type === 'text' && typeof child.value === 'string' && child.value.includes('[R')) {
+        const parts: HastNode[] = []
+        let last = 0
+        for (const match of child.value.matchAll(pattern)) {
+          const index = Number(match[1])
+          if (match.index === undefined) continue
+          if (match.index > last) parts.push({ type: 'text', value: child.value.slice(last, match.index) })
+          const summary = summaries[index - 1]
+          parts.push({
+            type: 'element', tagName: 'span',
+            properties: { className: ['ref-chip'], title: `R${index} · ${summary || '该编号不在本次上下文快照中（可疑引用）'}` },
+            children: [{ type: 'text', value: match[0] }],
+          })
+          last = match.index + match[0].length
+        }
+        if (last < child.value.length) parts.push({ type: 'text', value: child.value.slice(last) })
+        return parts
+      }
+      walk(child)
+      return [child]
+    })
+  }
+  return () => (tree: HastNode) => walk(tree)
+}
+
+export function MarkdownLike({ text, citations }: { text: string; citations?: Array<{ summary?: string; content?: string }> }) {
+  const summaries = (citations || []).map((hit) => `${hit.summary || ''}${hit.content ? `｜${hit.content.slice(0, 160)}` : ''}`)
+  if (citations?.length) return <div className="generated-content"><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeCitationChips(summaries)]}>{text}</ReactMarkdown></div>
   return <div className="generated-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown></div>
 }
