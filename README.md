@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/Express-5-000000" alt="Express 5" />
   <img src="https://img.shields.io/badge/SQLite-FTS5%20trigram-003b57" alt="SQLite FTS5" />
   <img src="https://img.shields.io/badge/TypeScript-strict-3178c6" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/tests-48%20passed-2ea44f" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-51%20passed-2ea44f" alt="tests" />
   <img src="https://img.shields.io/badge/%E8%AF%84%E6%B5%8B-%E5%9F%BA%E7%BA%BF%2B%E5%9B%9E%E5%BD%92%E9%97%A8-8b5cf6" alt="eval" />
 </p>
 
@@ -83,7 +83,7 @@ SQLite + FTS5（WAL、外键级联、双 FTS 表 + 触发器）
 ```bash
 pnpm install
 pnpm dev            # http://localhost:5173（API 4300，内置"雾港纪事"演示项目）
-pnpm test           # 48 个单测 / API / 评测测试
+pnpm test           # 51 个单测 / API / 评测测试
 pnpm eval           # 检索评测报告；pnpm eval:baseline 锁基线
 pnpm eval:extraction  # 霍比特人切分校验 + 提取对照
 pnpm build && pnpm start   # 生产模式（默认只监听 127.0.0.1）
@@ -112,7 +112,7 @@ docs/              架构说明与界面截图
 
 ## 当前边界
 
-- 单机单用户，无鉴权（默认只监听回环地址）；检索暂为词法方案，Embedding 字段与重排器已在架构中预留边界，基线已锁定、升级后可直接对照
+- 单机单用户，无鉴权（默认只监听回环地址）；检索为词法混合 + 查询形态门控向量召回（未配置 Embedding 或覆盖率不足时静默回落词法），重排器与"候选事实差异"提取器为预留边界，基线已锁定、升级后可直接对照
 - 多人协作与发布同步不在范围内；数据全量可导出为 JSON
 
 详细模块说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
