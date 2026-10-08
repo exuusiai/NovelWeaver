@@ -89,7 +89,7 @@ export function PlotBoard() {
   const generateOutline = async () => {
     const premise = project?.premise?.trim()
     setGenerating(true)
-    const prompt = `依据项目剧情梗概直接生成一份可以继续修改的全书大纲。\n\n剧情梗概：${premise || '项目尚未填写完整梗概，请结合现有项目资料形成合理候选。'}\n\n先判断适合的故事形态，不要默认唯一主角、固定主线或三幕式。输出必须包含：故事形态判断、核心读者承诺、叙事驱动力、按卷/阶段/单元展开的大纲、各阶段关注中心与状态变化、剧情线更替或汇流方式、关键人物/群体弧、伏笔与回收、结局方向、仍需作者决定的假设。内容要具体到可继续拆分章节。`
+    const prompt = `依据项目剧情梗概直接生成一份可以继续修改的全书大纲。\n\n剧情梗概：${premise || '项目尚未填写完整梗概，请结合现有项目资料形成合理候选。'}\n\n先判断适合的故事形态，不套三幕式，但**必须明确一条贯穿全书的主线**（核心冲突/追问，群像故事的主线可以是反复出现的问题或场域）与**至少两条支线**（人物弧/谜团/感情线/势力线），并写清：各支线在哪些阶段与主线交汇、高潮如何收束。输出必须包含：故事形态判断、核心读者承诺、主线与支线结构（含交汇点）、叙事驱动力、按卷/阶段/单元展开的大纲、各阶段关注中心与状态变化、关键人物/群体弧、伏笔与回收、结局方向、仍需作者决定的假设。内容要具体到可继续拆分章节。`
     try { await storeOutline(await post<GenerationResult>('/api/ai/generate', { projectId, task: 'outline', prompt }), '由项目梗概生成的全书大纲', prompt) } finally { setGenerating(false) }
   }
 
