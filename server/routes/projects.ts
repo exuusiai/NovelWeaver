@@ -28,7 +28,7 @@ projectsRouter.get('/api/projects', (_req, res) => {
 projectsRouter.post('/api/projects', (req, res) => {
   const body = z.object({ name: z.string().min(1), genre: z.string().default(''), premise: z.string().default(''), wordGoal: z.number().int().positive().default(100000) }).parse(req.body)
   const projectId = sql.id(); const stamp = sql.now()
-  sql.run('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, body.name, body.genre, body.premise, 'active', body.wordGoal, 0, stamp, stamp)
+  sql.run('INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, body.name, body.genre, body.premise, 'active', body.wordGoal, 0, stamp, stamp)
   ensureDefaultVolume(projectId)
   res.status(201).json(requireProject(projectId))
 })

@@ -78,18 +78,21 @@ export function cosine(a: number[], b: number[]) {
 // back to lexical instead of serving a half-indexed vector view.
 export function projectEmbeddingCoverage(projectId: string) {
   const row = sql.get<{ total: number; embedded: number }>(
-    "SELECT COUNT(*) total, COALESCE(SUM(CASE WHEN embedding != '' THEN 1 ELSE 0 END), 0) embedded FROM memory_chunks WHERE project_id = ?", projectId)
+    `SELECT COUNT(*) total, COALESCE(SUM(CASE WHEN embedding != '' AND embedding_model = ? THEN 1 ELSE 0 END), 0) embedded FROM memory_chunks WHERE project_id = ?`, embeddingModel, projectId)
   if (!row || row.total === 0) return 1
   return row.embedded / row.total
 }
 
 async function backfillSweep() {
+  // 生命周期闭环：只补"当前模型缺失或由旧模型生成"的块——换模型后旧向量自动重算，
+  // 不会被误当成可用召回。
   const rows = sql.all<{ id: string; text: string }>(
-    "SELECT id, summary || ' ' || keywords || ' ' || content AS text FROM memory_chunks WHERE embedding = '' AND LENGTH(TRIM(text)) > 0 LIMIT 64")
+    `SELECT id, summary || ' ' || keywords || ' ' || content AS text FROM memory_chunks
+      WHERE (embedding = '' OR embedding_model != ?) AND LENGTH(TRIM(text)) > 0 LIMIT 64`, embeddingModel)
   if (!rows.length) return 0
   const vectors = await embedTexts(rows.map((row) => row.text))
-  const update = db.prepare('UPDATE memory_chunks SET embedding = ? WHERE id = ?')
-  rows.forEach((row, index) => update.run(JSON.stringify(vectors[index]), row.id))
+  const update = db.prepare('UPDATE memory_chunks SET embedding = ?, embedding_model = ? WHERE id = ?')
+  rows.forEach((row, index) => update.run(JSON.stringify(vectors[index]), embeddingModel, row.id))
   return rows.length
 }
 

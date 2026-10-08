@@ -124,7 +124,7 @@ storyRouter.post('/api/outlines/:outlineId/apply-decomposition', (req, res) => {
       volume.chapters.forEach((chapter) => {
         if (sql.get('SELECT id FROM chapters WHERE project_id=? AND title=?', outline.project_id, chapter.title)) { result.skippedChapters += 1; return }
         const chapterId = sql.id()
-        sql.run('INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', chapterId, outline.project_id, chapter.title, '', position++, 'planned', chapter.summary, chapter.pov, chapter.targetWords, stamp, stamp)
+        sql.run('INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', chapterId, outline.project_id, chapter.title, '', position++, 'planned', chapter.summary, chapter.pov, chapter.targetWords, stamp, stamp)
         sql.run('INSERT INTO chapter_marks VALUES (?, ?, ?, ?, ?, ?)', chapterId, outline.project_id, 0, 'normal', '', stamp)
         sql.run('INSERT INTO chapter_volume_bindings VALUES (?, ?, ?)', chapterId, volumeRow!.id, volumeOrder++)
         sql.run('INSERT INTO chapter_outlines VALUES (?, ?, ?, ?, ?, ?, ?)', chapterId, outline.project_id, outline.id, chapterOutlineMarkdown(chapter), 'active', stamp, stamp)

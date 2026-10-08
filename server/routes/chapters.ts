@@ -5,7 +5,7 @@ import { chapterContentFingerprint } from '../importer.ts'
 import { getModelStatus, summarizeWithModel } from '../ai.ts'
 import { precheckChapter } from '../review.ts'
 import {
-  asyncRoute, bindChapterToVolume, chapterSelect, ensureDefaultVolume, rebuildChapterMemory,
+  asyncRoute, bindChapterToVolume, chapterSelect, contentHash, ensureDefaultVolume, normalizeChapterPositions, rebuildChapterMemory,
   removeChapterWithMemory, requireProject, saveChapterHistory,
 } from './helpers.ts'
 
@@ -64,8 +64,8 @@ chaptersRouter.post('/api/projects/:projectId/chapters', (req, res) => {
   const chapterId = sql.id(); const stamp = sql.now()
   db.transaction(() => {
     if (after) sql.run('UPDATE chapters SET position=position+1 WHERE project_id=? AND position>=?', req.params.projectId, position)
-    sql.run(`INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chapterId, req.params.projectId, body.title,
-      body.content, position, 'draft', body.summary, body.pov, body.targetWords, stamp, stamp)
+    sql.run(`INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chapterId, req.params.projectId, body.title,
+      body.content, position, 'draft', body.summary, body.pov, body.targetWords, stamp, stamp, contentHash(body.content))
     sql.run('INSERT INTO chapter_marks VALUES (?, ?, ?, ?, ?, ?)', chapterId, req.params.projectId, 0, 'normal', '', stamp)
     const afterBinding = body.afterChapterId ? sql.get<{ volume_id: string }>('SELECT volume_id FROM chapter_volume_bindings WHERE chapter_id=?', body.afterChapterId) : undefined
     bindChapterToVolume(req.params.projectId, chapterId, afterBinding?.volume_id)
@@ -84,13 +84,22 @@ chaptersRouter.patch('/api/chapters/:chapterId', (req, res) => {
   if (body.content !== undefined && chapterContentFingerprint(String(current.content)) !== chapterContentFingerprint(body.content)) {
     saveChapterHistory({ id: String(current.id), project_id: String(current.project_id), title: String(current.title), content: String(current.content), summary: String(current.summary ?? '') })
   }
-  sql.run(`UPDATE chapters SET title=?, content=?, summary=?, pov=?, status=?, target_words=?, position=?, updated_at=? WHERE id=?`,
-    body.title ?? current.title, body.content ?? current.content, body.summary ?? current.summary, body.pov ?? current.pov,
-    body.status ?? current.status, body.targetWords ?? current.target_words, body.position ?? current.position, sql.now(), req.params.chapterId)
-  if (body.content !== undefined) {
-    rebuildChapterMemory(String(current.project_id), req.params.chapterId, String(body.title ?? current.title), body.content, String(body.summary ?? current.summary ?? ''))
-  }
-  sql.run('UPDATE projects SET updated_at=? WHERE id=?', sql.now(), current.project_id)
+  const contentChanged = body.content !== undefined && body.content !== current.content
+  const positionChanged = body.position !== undefined && body.position !== current.position
+  db.transaction(() => {
+    sql.run(`UPDATE chapters SET title=?, content=?, summary=?, pov=?, status=?, target_words=?, position=?, content_hash=?, updated_at=? WHERE id=?`,
+      body.title ?? current.title, body.content ?? current.content, body.summary ?? current.summary, body.pov ?? current.pov,
+      body.status ?? current.status, body.targetWords ?? current.target_words, body.position ?? current.position,
+      contentChanged ? contentHash(String(body.content ?? current.content)) : current.content_hash, sql.now(), req.params.chapterId)
+    if (contentChanged) {
+      // 正文变更：结构化数据（实体/事件/事实）基于旧稿，标记该章分析结果过期；
+      // analyzed_hash 置空后由分析中心展示"已过期"，重新分析完成时回写新 hash
+      sql.run('UPDATE chapters SET analyzed_hash = ? WHERE id = ?', '', req.params.chapterId)
+      rebuildChapterMemory(String(current.project_id), req.params.chapterId, String(body.title ?? current.title), String(body.content), String(body.summary ?? current.summary ?? ''))
+    }
+    if (positionChanged) normalizeChapterPositions(String(current.project_id))
+    sql.run('UPDATE projects SET updated_at=? WHERE id=?', sql.now(), current.project_id)
+  })()
   res.json(sql.get(chapterSelect('WHERE c.id = ?'), req.params.chapterId))
 })
 

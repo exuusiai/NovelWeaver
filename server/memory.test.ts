@@ -7,8 +7,8 @@ const { assembleContext } = await import('../server/memory.ts')
 
 const stamp = () => new Date().toISOString()
 const projectId = 'macro-memory-0000-0000'
-sql.run('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, '宏观记忆测试', '悬疑', '找到失踪的姐姐', 'active', 100000, 0, stamp(), stamp())
-sql.run('INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 'mm-ch-1', projectId, '第一章', '港口的雨夜。'.repeat(40), 0, 'draft', '林雾在石滩醒来。', '林雾', 3000, stamp(), stamp())
+sql.run('INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, '宏观记忆测试', '悬疑', '找到失踪的姐姐', 'active', 100000, 0, stamp(), stamp())
+sql.run('INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 'mm-ch-1', projectId, '第一章', '港口的雨夜。'.repeat(40), 0, 'draft', '林雾在石滩醒来。', '林雾', 3000, stamp(), stamp())
 sql.run('INSERT INTO volumes VALUES (?, ?, ?, ?, ?, ?, ?)', 'mm-vol-1', projectId, '第一卷 潮汐之下', '林雾追查姐姐失踪的第一条线索。', 0, stamp(), stamp())
 sql.run('INSERT INTO chapter_volume_bindings VALUES (?, ?, ?)', 'mm-ch-1', 'mm-vol-1', 0)
 sql.run('INSERT INTO foreshadowing VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 'mm-fs-1', projectId, '渗水地图上多出的第七码头', 'mm-ch-1', null, 'open', '', stamp())
@@ -24,7 +24,7 @@ describe('全书宏观记忆', () => {
   })
 
   it('无卷无伏笔时宏观块只剩体量进度', async () => {
-    sql.run('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 'macro-empty-0000', '空项目', '', '', 'active', 100000, 0, stamp(), stamp())
+    sql.run('INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 'macro-empty-0000', '空项目', '', '', 'active', 100000, 0, stamp(), stamp())
     const assembled = await assembleContext('macro-empty-0000', '随便写点什么')
     expect(assembled.text).toContain('共 0 章 / 0 字')
     expect(assembled.text).not.toContain('【卷结构】')

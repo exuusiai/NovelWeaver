@@ -6,7 +6,7 @@ import type { AnalysisJob, Chapter } from '../types'
 import { Badge, Button, LoadingState } from '../components/ui'
 
 interface QualityData {
-  metrics: { chapters: number; analyzedCharacters: number; estimatedInputTokens: number; entities: number; evidenceCoverage: number; eventChapterCoverage: number; candidateCount: number; lowConfidenceCount: number; hallucinationRiskCount: number; truncationFailures: number; failedJobs: number; details: Record<string, unknown> }
+  metrics: { chapters: number; analyzedCharacters: number; estimatedInputTokens: number; entities: number; evidenceCoverage: number; eventChapterCoverage: number; candidateCount: number; lowConfidenceCount: number; hallucinationRiskCount: number; truncationFailures: number; failedJobs: number; staleChapterCount: number; staleChapters: Array<{ id: string; title: string }>; details: Record<string, unknown> }
   failedJobs: Array<{ id: string; message: string; error: string; status: string; stage: string }>
   audits: Array<{ id: string; pass_name: string; metrics: Record<string, number>; disagreements: Array<{ kind: string; label: string; detail: string }>; created_at: string }>
 }
@@ -53,6 +53,7 @@ export function AnalysisCenter() {
       <QualityCard icon={<CheckCircle2 />} value={`${quality?.metrics.eventChapterCoverage ?? 0}%`} label="事件章节关联" detail={`${quality?.metrics.chapters ?? 0} 个章节`} />
       <QualityCard icon={<AlertTriangle />} value={quality?.metrics.hallucinationRiskCount ?? 0} label="高幻觉风险" detail={`${quality?.metrics.candidateCount ?? 0} 个候选待审`} />
       <QualityCard icon={<RotateCcw />} value={quality?.metrics.failedJobs ?? 0} label="失败任务" detail={`${quality?.metrics.truncationFailures ?? 0} 次疑似输出截断`} />
+      <QualityCard icon={<AlertTriangle />} warn={(quality?.metrics.staleChapterCount ?? 0) > 0} value={quality?.metrics.staleChapterCount ?? 0} label="正文已改待重析" detail={(quality?.metrics.staleChapters as Array<{ title: string }> | undefined)?.slice(0, 2).map((chapter) => chapter.title).join('、') || '全部章节分析结果与正文一致'} />
       <QualityCard icon={<FlaskConical />} value={(quality?.metrics.estimatedInputTokens ?? 0).toLocaleString()} label="估算输入 Token" detail="按中文字符近似，实际以服务商账单为准" />
     </section>
     <div className="analysis-grid"><section className="surface job-list"><header><div><h3>分析任务</h3><p>最近 20 次执行记录</p></div><span>{jobs.length} 条</span></header>{jobs.map((job) => <article key={job.id}><div className="job-head"><div><Badge tone={job.status === 'completed' ? 'teal' : job.status === 'failed' || job.status === 'partial' ? 'red' : job.status === 'paused' ? 'amber' : 'blue'}>{statusLabel(job.status)}</Badge><strong>{job.stage === 'second-pass' ? '独立二次分析' : '文稿结构化分析'}</strong></div><time>{new Date(job.created_at).toLocaleString('zh-CN')}</time></div><div className="job-progress"><i style={{ width: `${job.progress}%` }} /></div><p>{job.error || job.message}</p><footer><span>{job.progress}%{job.result?.failures?.length ? ` · ${job.result.failures.length} 个失败批次` : ''}</span><div>{['queued', 'running'].includes(job.status) && <Button variant="ghost" onClick={() => act(job, 'pause')}><CirclePause size={14} /> 暂停</Button>}{job.status === 'paused' && <Button variant="ghost" onClick={() => act(job, 'resume')}><CirclePlay size={14} /> 继续</Button>}{['failed', 'partial'].includes(job.status) && <Button variant="secondary" onClick={() => act(job, 'retry')}><RotateCcw size={14} /> 重试失败章节</Button>}</div></footer></article>)}</section>
@@ -60,5 +61,5 @@ export function AnalysisCenter() {
   </div>
 }
 
-function QualityCard({ icon, value, label, detail }: { icon: React.ReactNode; value: string | number; label: string; detail: string }) { return <article>{icon}<div><strong>{value}</strong><span>{label}</span><p>{detail}</p></div></article> }
+function QualityCard({ icon, value, label, detail, warn = false }: { icon: React.ReactNode; value: string | number; label: string; detail: string; warn?: boolean }) { return <article className={warn ? 'metric-warn' : ''}>{icon}<div><strong>{value}</strong><span>{label}</span><p>{detail}</p></div></article> }
 function statusLabel(status: string) { return ({ queued: '排队中', running: '分析中', paused: '已暂停', partial: '部分完成', completed: '已完成', failed: '失败' } as Record<string, string>)[status] || status }

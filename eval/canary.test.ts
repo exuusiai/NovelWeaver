@@ -11,9 +11,9 @@ const stamp = () => new Date().toISOString()
 // Canary project seeded with one of each known rule violation. If a future change
 // weakens or removes a review rule, this test fails — the review engine's baseline.
 const projectId = 'canary-project-0000-0000'
-sql.run('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, '审查金丝雀', '测试', '验证审查规则', 'active', 100000, 0, stamp(), stamp())
-sql.run('INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 'canary-ch1', projectId, '第一章', '很短的正文。', 0, 'draft', '', '', 3000, stamp(), stamp())
-sql.run('INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 'canary-ch2', projectId, '第二章', '完整的正文，长度超过一百八十个字符的阈值，用来确认短章检查不会误报完全正常的章节。'.repeat(8), 1, 'revised', '有摘要', '林雾', 3000, stamp(), stamp())
+sql.run('INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, '审查金丝雀', '测试', '验证审查规则', 'active', 100000, 0, stamp(), stamp())
+sql.run('INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 'canary-ch1', projectId, '第一章', '很短的正文。', 0, 'draft', '', '', 3000, stamp(), stamp())
+sql.run('INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 'canary-ch2', projectId, '第二章', '完整的正文，长度超过一百八十个字符的阈值，用来确认短章检查不会误报完全正常的章节。'.repeat(8), 1, 'revised', '有摘要', '林雾', 3000, stamp(), stamp())
 sql.run(`INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 'canary-ev1', projectId, '缺时间事件', '摘要', '', 1, 'planned', null, null, '[]', '', '', '', '{}', stamp(), stamp())
 sql.run('INSERT INTO foreshadowing VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 'canary-fs1', projectId, '未回收伏笔', null, null, 'open', '', stamp())
 sql.run(`INSERT INTO entities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 'canary-en1', projectId, 'character', '候选人物', '候选摘要', '{}', 'candidate', 0.8, null, stamp(), stamp())

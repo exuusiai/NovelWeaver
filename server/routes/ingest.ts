@@ -6,7 +6,7 @@ import { db, sql } from '../db.ts'
 import { chapterContentFingerprint, chunkText, extractText, isEffectivelyEmptyChapter, splitChaptersDetailed, summarize } from '../importer.ts'
 import { getModelStatus } from '../ai.ts'
 import { analysisQuality, analyzeProjectData, startAnalysisJob, updateAnalysisJob } from './analysis-service.ts'
-import { asyncRoute, analysisModelRequired, bindChapterToVolume, decodeRow, deduplicateImportedChapters, removeChapterWithMemory, requireProject } from './helpers.ts'
+import { asyncRoute, contentHash, analysisModelRequired, bindChapterToVolume, decodeRow, deduplicateImportedChapters, removeChapterWithMemory, requireProject } from './helpers.ts'
 
 export const ingestRouter = Router()
 
@@ -61,16 +61,33 @@ ingestRouter.post('/api/projects/:projectId/import/previews/:previewId/commit', 
   if (replaceImported) {
     const importedIds = sql.all<{ id: string }>("SELECT id FROM chapters WHERE project_id = ? AND status = 'imported'", projectId)
     const candidateIds = sql.all<{ id: string }>(`SELECT id FROM entities WHERE project_id = ? AND canon_status = 'candidate' AND json_extract(data, '$.source') = 'model-analysis'`, projectId)
-    db.transaction(() => { importedIds.forEach(({ id }) => removeChapterWithMemory(id)); candidateIds.forEach(({ id }) => { sql.run('DELETE FROM relations WHERE from_entity_id=? OR to_entity_id=?', id, id); sql.run('DELETE FROM entities WHERE id=?', id) }); sql.run("DELETE FROM events WHERE project_id=? AND status='candidate'", projectId); sql.run("DELETE FROM plotlines WHERE project_id=? AND status='candidate'", projectId); sql.run('DELETE FROM imports WHERE project_id=?', projectId) })()
+    db.transaction(() => {
+        // 数据失效流程：一次替换 = 新的稿件修订。旧稿派生的候选数据整体清除；
+        // 作者人工确认过的正史保留（那是作者的决定，不由导入器替作者删），但剥离失效章节来源。
+        importedIds.forEach(({ id }) => removeChapterWithMemory(id))
+        candidateIds.forEach(({ id }) => { sql.run('DELETE FROM relations WHERE from_entity_id=? OR to_entity_id=?', id, id); sql.run('DELETE FROM entities WHERE id=?', id) })
+        sql.run("DELETE FROM events WHERE project_id=? AND status='candidate'", projectId)
+        sql.run("DELETE FROM plotlines WHERE project_id=? AND status='candidate'", projectId)
+        sql.run(`DELETE FROM story_facts WHERE project_id=? AND canon_status='candidate' AND source_chapter_id IS NOT NULL
+          AND source_chapter_id NOT IN (SELECT id FROM chapters WHERE project_id=?)`, projectId, projectId)
+        sql.run('UPDATE story_facts SET source_chapter_id=NULL WHERE project_id=? AND source_chapter_id NOT IN (SELECT id FROM chapters WHERE project_id=?)', projectId, projectId)
+        sql.run('DELETE FROM reviews WHERE project_id=? AND status=?', projectId, 'open')
+        sql.run('DELETE FROM chapter_history WHERE project_id=? AND chapter_id NOT IN (SELECT id FROM chapters WHERE project_id=?)', projectId, projectId)
+        // 修订号递增：在途分析任务（旧修订）写回前会被 revision 校验拦截
+        sql.run('UPDATE projects SET import_revision = import_revision + 1 WHERE id=?', projectId)
+        sql.run("UPDATE analysis_jobs SET status='canceled', stage='canceled', message='替换导入，任务已取消', updated_at=? WHERE project_id=? AND status IN ('queued','running')", sql.now(), projectId)
+        sql.run('DELETE FROM imports WHERE project_id=?', projectId)
+      })()
   }
   const basePosition = (sql.get<{ max: number }>('SELECT COALESCE(MAX(position), -1) max FROM chapters WHERE project_id = ?', projectId)?.max ?? -1) + 1
   const diagnostics = decodeRow(preview).diagnostics
   db.transaction(() => {
-    filtered.forEach((chapter, index) => { const chapterId = sql.id(); const stamp = sql.now(); sql.run(`INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chapterId, projectId, chapter.title, chapter.content, basePosition + index, 'imported', chapter.summary || summarize(chapter.content), '', 3000, stamp, stamp); bindChapterToVolume(projectId, chapterId); chunkText(chapter.content).forEach((chunk, chunkIndex) => sql.addMemory(projectId, 'chapter', chapterId, chunk, chunkIndex === 0 ? (chapter.summary || summarize(chunk)) : summarize(chunk), `${chapter.title} 导入片段`, chapterId)) })
+    filtered.forEach((chapter, index) => { const chapterId = sql.id(); const stamp = sql.now(); sql.run(`INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chapterId, projectId, chapter.title, chapter.content, basePosition + index, 'imported', chapter.summary || summarize(chapter.content), '', 3000, stamp, stamp, contentHash(chapter.content)); bindChapterToVolume(projectId, chapterId); chunkText(chapter.content).forEach((chunk, chunkIndex) => sql.addMemory(projectId, 'chapter', chapterId, chunk, chunkIndex === 0 ? (chapter.summary || summarize(chunk)) : summarize(chunk), `${chapter.title} 导入片段`, chapterId)) })
     sql.run('INSERT INTO imports VALUES (?, ?, ?, ?, ?, ?, ?)', sql.id(), projectId, preview.filename, fileHash, rawText, JSON.stringify(diagnostics), sql.now()); sql.run('UPDATE projects SET imported=1, updated_at=? WHERE id=?', sql.now(), projectId); sql.run('UPDATE import_previews SET status=?, updated_at=? WHERE id=?', 'committed', sql.now(), req.params.previewId)
   })()
+  const revision = sql.get<{ r: number }>('SELECT import_revision r FROM projects WHERE id=?', projectId)?.r ?? 0
   const configured = getModelStatus().configured
-  const job = sql.id(); const stamp = sql.now(); sql.run('INSERT INTO analysis_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', job, projectId, configured ? 'queued' : 'failed', configured ? 'queued' : 'waiting-model', configured ? 0 : 100, configured ? '等待模型分析' : '文稿已导入，配置模型后可重试分析', configured ? '' : '当前未配置模型 API。', replaceImported ? 1 : 0, '{}', stamp, stamp)
+  const job = sql.id(); const stamp = sql.now(); sql.run('INSERT INTO analysis_jobs (id, project_id, status, stage, progress, message, error, replace_candidates, result, created_at, updated_at, import_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', job, projectId, configured ? 'queued' : 'failed', configured ? 'queued' : 'waiting-model', configured ? 0 : 100, configured ? '等待模型分析' : '文稿已导入，配置模型后可重试分析', configured ? '' : '当前未配置模型 API。', replaceImported ? 1 : 0, '{}', stamp, stamp, revision)
   if (configured) startAnalysisJob(job)
   res.status(201).json({ project, previewId: req.params.previewId, chapters: filtered.length, analysisJobId: job, diagnostics, replaced: replaceImported })
 }))
@@ -112,7 +129,7 @@ ingestRouter.post('/api/projects/:projectId/import', upload.single('file'), asyn
   const transaction = db.transaction(() => {
     chapters.forEach((chapter, index) => {
       const chapterId = sql.id(); const stamp = sql.now()
-      sql.run(`INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chapterId, projectId,
+      sql.run(`INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chapterId, projectId,
         chapter.title, chapter.content, basePosition + index, 'imported', chapter.summary, '', 3000, stamp, stamp)
       bindChapterToVolume(projectId, chapterId)
       chunkText(chapter.content).forEach((chunk, chunkIndex) => sql.addMemory(projectId, 'chapter', chapterId, chunk,
@@ -145,7 +162,7 @@ ingestRouter.post('/api/projects/:projectId/analysis/jobs', (req, res) => {
   const active = sql.get<Record<string, unknown>>("SELECT * FROM analysis_jobs WHERE project_id = ? AND status IN ('queued','running','paused') ORDER BY created_at DESC LIMIT 1", projectId)
   if (active) return res.status(409).json({ error: '已有分析任务正在进行。', job: decodeRow(active) })
   const replaceCandidates = Boolean(req.body?.replaceCandidates); const jobId = sql.id(); const stamp = sql.now()
-  sql.run('INSERT INTO analysis_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', jobId, projectId, 'queued', 'queued', 0, '等待开始', '', replaceCandidates ? 1 : 0, '{}', stamp, stamp)
+  sql.run('INSERT INTO analysis_jobs (id, project_id, status, stage, progress, message, error, replace_candidates, result, created_at, updated_at, import_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', jobId, projectId, 'queued', 'queued', 0, '等待开始', '', replaceCandidates ? 1 : 0, '{}', stamp, stamp, sql.get<{ r: number }>('SELECT import_revision r FROM projects WHERE id=?', projectId)?.r ?? 0)
   startAnalysisJob(jobId)
   res.status(202).json(decodeRow(sql.get<Record<string, unknown>>('SELECT * FROM analysis_jobs WHERE id = ?', jobId)!))
 })

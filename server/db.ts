@@ -194,10 +194,13 @@ const id = () => randomUUID()
 
 function addMemory(projectId: string, sourceType: string, sourceId: string, content: string, summary: string, keywords: string, chapterId?: string) {
   const memoryId = id()
-  db.prepare(`INSERT INTO memory_chunks (id, project_id, chapter_id, source_type, source_id, content, summary, keywords, importance, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(memoryId, projectId, chapterId ?? null, sourceType, sourceId, content, summary, keywords, 70, now())
-  db.prepare('INSERT INTO memory_fts (id, project_id, content, summary, keywords) VALUES (?, ?, ?, ?, ?)')
-    .run(memoryId, projectId, content, summary, keywords)
+  // 正文记忆与 FTS 原子写入：第二步失败不再留下有 chunk 无索引的漂移
+  db.transaction(() => {
+    db.prepare(`INSERT INTO memory_chunks (id, project_id, chapter_id, source_type, source_id, content, summary, keywords, importance, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(memoryId, projectId, chapterId ?? null, sourceType, sourceId, content, summary, keywords, 70, now())
+    db.prepare('INSERT INTO memory_fts (id, project_id, content, summary, keywords) VALUES (?, ?, ?, ?, ?)')
+      .run(memoryId, projectId, content, summary, keywords)
+  })()
 }
 
 function seedDemo() {
@@ -206,7 +209,7 @@ function seedDemo() {
 
   const projectId = id()
   const stamp = now()
-  db.prepare(`INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+  db.prepare(`INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     projectId, '雾港纪事', '蒸汽奇幻 · 悬疑', '失忆制图师在一座会改变街道的港城中，追查姐姐失踪与潮汐议会的秘密。',
     'active', 120000, 0, stamp, stamp,
   )
@@ -220,7 +223,7 @@ function seedDemo() {
   const chapterIds: string[] = []
   chapterSeed.forEach(([title, content, summary], index) => {
     const chapterId = id(); chapterIds.push(chapterId)
-    db.prepare(`INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(chapterId, projectId, title, content, index, index === 0 ? 'revised' : 'draft', summary, '林雾', 3000, stamp, stamp)
     addMemory(projectId, 'chapter', chapterId, content, summary, `${title} 林雾 雾港 地图`, chapterId)
   })
@@ -281,9 +284,23 @@ for (const statement of [
   'ALTER TABLE generations ADD COLUMN used INTEGER NOT NULL DEFAULT -1',
   "ALTER TABLE memory_chunks ADD COLUMN embedding TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE reviews ADD COLUMN ai_suggestion TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE chapters ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE chapters ADD COLUMN analyzed_hash TEXT NOT NULL DEFAULT ''",
+  'ALTER TABLE projects ADD COLUMN import_revision INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE analysis_jobs ADD COLUMN import_revision INTEGER NOT NULL DEFAULT -1',
+  "ALTER TABLE memory_chunks ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''",
 ]) {
   try { db.exec(statement) } catch { /* column already exists */ }
 }
+
+// 启动一致性对账：memory_fts 为手动维护的二级索引，任何写入路径漏写或
+// 事务中断都会造成正文记忆与 FTS 漂移。启动时全量对齐一次（幂等、廉价）。
+try {
+  db.exec(`DELETE FROM memory_fts WHERE id NOT IN (SELECT id FROM memory_chunks);
+    INSERT INTO memory_fts (id, project_id, content, summary, keywords)
+    SELECT id, project_id, content, summary, keywords FROM memory_chunks
+    WHERE id NOT IN (SELECT id FROM memory_fts);`)
+} catch { /* fts rebuild skipped on fresh databases without memory */ }
 
 function ensureVolumeStructure() {
   const stamp = now()

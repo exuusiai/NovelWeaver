@@ -10,12 +10,13 @@ const { setRuntimeConfig } = await import('../server/ai.ts')
 
 const stamp = () => new Date().toISOString()
 const projectId = 'gated-retrieval-0000-0000'
-sql.run('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, '门控检索测试', '测试', '验证检索门控', 'active', 100000, 0, stamp(), stamp())
+sql.run('INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, '门控检索测试', '测试', '验证检索门控', 'active', 100000, 0, stamp(), stamp())
 // 三个记忆块，预填向量：内容 A/B 与"哑谜"语义近、C 无关。这里用可区分的向量：
 // 查询向量 mock 返回 [1, 0]，块 A=[1,0]（cos=1）、B=[0.9,0.1]、C=[0,1]（cos=0）
 const insertChunk = (id: string, content: string, vector: number[]) => {
-  sql.run('INSERT INTO memory_chunks (id, project_id, source_type, source_id, content, summary, keywords, importance, embedding, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    id, projectId, 'chapter', null, content, content.slice(0, 10), content.slice(0, 6), 50, JSON.stringify(vector), stamp())
+  // embedding_model 预置为测试模型名：覆盖率按"当前模型的向量"口径统计（生命周期闭环）
+  sql.run('INSERT INTO memory_chunks (id, project_id, source_type, source_id, content, summary, keywords, importance, embedding, embedding_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    id, projectId, 'chapter', null, content, content.slice(0, 10), content.slice(0, 6), 50, JSON.stringify(vector), 'test-embed', stamp())
 }
 insertChunk('gate-vec-a', '哑谜在黑暗中的密室里低声数着谜语。', [1, 0])
 insertChunk('gate-vec-b', '哑谜沿着通道走向了山下王座的殿堂。', [0.9, 0.1])

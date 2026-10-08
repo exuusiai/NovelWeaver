@@ -7,9 +7,9 @@ const { runReview } = await import('../server/review.ts')
 
 const stamp = () => new Date().toISOString()
 const projectId = 'fact-conflict-0000-0000'
-sql.run('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, '事实冲突测试', '测试', '验证候选事实差异提取器', 'active', 100000, 0, stamp(), stamp())
+sql.run('INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', projectId, '事实冲突测试', '测试', '验证候选事实差异提取器', 'active', 100000, 0, stamp(), stamp())
 const insertChapter = (id: string, title: string, position: number) => {
-  sql.run('INSERT INTO chapters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, projectId, title, `第一章正文 ${id}`.repeat(30), position, 'imported', `${title}摘要`, '比尔博', 3000, stamp(), stamp())
+  sql.run('INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, projectId, title, `第一章正文 ${id}`.repeat(30), position, 'imported', `${title}摘要`, '比尔博', 3000, stamp(), stamp())
 }
 insertChapter('fc-ch-1', '第一章', 0)
 insertChapter('fc-ch-2', '第二章', 1)

@@ -25,11 +25,31 @@ export function analysisModelRequired() {
   return Object.assign(new Error('需要先配置可用的模型 API，才能进行可靠的文稿分析。当前本地模式不会猜测人物和地点。'), { status: 409, code: 'MODEL_REQUIRED' })
 }
 
+import { createHash } from 'node:crypto'
+
+export function contentHash(text: string) {
+  return createHash('sha256').update(text).digest('hex').slice(0, 32)
+}
+
 export function removeChapterWithMemory(chapterId: string) {
   const memoryIds = sql.all<{ id: string }>('SELECT id FROM memory_chunks WHERE chapter_id = ?', chapterId)
   memoryIds.forEach((row) => sql.run('DELETE FROM memory_fts WHERE id = ?', row.id))
   sql.run('DELETE FROM memory_chunks WHERE chapter_id = ?', chapterId)
   sql.run('DELETE FROM events WHERE chapter_id = ?', chapterId)
+  // 悬空引用清理：伏笔与实体来源指向已删除章节时置空，避免作者看到指向不存在章节的证据
+  sql.run('UPDATE foreshadowing SET setup_chapter_id = NULL WHERE setup_chapter_id = ?', chapterId)
+  sql.run('UPDATE foreshadowing SET payoff_chapter_id = NULL WHERE payoff_chapter_id = ?', chapterId)
+  sql.run('UPDATE entities SET source_chapter_id = NULL WHERE source_chapter_id = ?', chapterId)
+  // 开放审查的证据数组剥离该章节；剥空的结构类条目直接删除
+  for (const review of sql.all<{ id: string; evidence: string }>("SELECT id, evidence FROM reviews WHERE status = 'open' AND evidence LIKE ?", `%${chapterId}%`)) {
+    try {
+      const ids = JSON.parse(review.evidence) as string[]
+      const rest = ids.filter((entry) => entry !== chapterId)
+      if (rest.length === ids.length) continue
+      if (rest.length === 0) sql.run('DELETE FROM reviews WHERE id = ?', review.id)
+      else sql.run('UPDATE reviews SET evidence = ? WHERE id = ?', JSON.stringify(rest), review.id)
+    } catch { /* malformed evidence left alone */ }
+  }
   sql.run('DELETE FROM chapters WHERE id = ?', chapterId)
 }
 

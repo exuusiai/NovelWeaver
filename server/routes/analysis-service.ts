@@ -2,7 +2,7 @@ import { db, sql } from '../db.ts'
 import { estimateTokens } from '../memory.ts'
 import { analyzeManuscript, characterNameVariants } from '../analyzer.ts'
 import { getModelStatus } from '../ai.ts'
-import { analysisModelRequired, decodeRow } from './helpers.ts'
+import { contentHash, analysisModelRequired, decodeRow } from './helpers.ts'
 
 export function updateAnalysisJob(jobId: string, values: { status?: string; stage?: string; progress?: number; message?: string; error?: string; result?: unknown }) {
   const current = sql.get<Record<string, unknown>>('SELECT * FROM analysis_jobs WHERE id = ?', jobId)
@@ -21,6 +21,11 @@ export function analysisQuality(projectId: string) {
   const evidenceEntities = entities.filter((row) => { try { const data = JSON.parse(row.data); return Array.isArray(data.evidence) && data.evidence.length > 0 } catch { return false } }).length
   const linkedEvents = events.filter((row) => Boolean(row.chapter_id)).length
   const details = run?.details ? decodeRow(run).details as Record<string, unknown> : {}
+  // 正文已改但分析未跟进的章节。项目至少跑过一次分析才谈"过期"：
+  // analyzed_hash 为空（旧口径下分析/从未纳入）或不等于当前 content_hash 均算。
+  const hasAnalysis = sql.get<{ n: number }>("SELECT COUNT(*) n FROM analysis_runs WHERE project_id = ? AND status IN ('completed','partial')", projectId)?.n ?? 0
+  const staleChapters = hasAnalysis ? sql.all<{ id: string; title: string }>(`SELECT id, title FROM chapters WHERE project_id = ?
+    AND content_hash != '' AND (analyzed_hash = '' OR analyzed_hash != content_hash) ORDER BY position`, projectId) : []
   const failedJobs = sql.all<{ id: string; message: string; error: string; status: string; stage: string }>("SELECT id, message, error, status, stage FROM analysis_jobs WHERE project_id = ? AND status IN ('failed','partial') ORDER BY created_at DESC LIMIT 20", projectId)
   return {
     run: run ? decodeRow(run) : null,
@@ -33,7 +38,9 @@ export function analysisQuality(projectId: string) {
       lowConfidenceCount: entities.filter((row) => row.confidence < .65).length,
       hallucinationRiskCount: entities.filter((row) => row.canon_status === 'candidate' && (row.confidence < .65 || (() => { try { const data = JSON.parse(row.data); return !Array.isArray(data.evidence) || data.evidence.length === 0 } catch { return true } })())).length,
       truncationFailures: failedJobs.filter((row) => /截断|长度上限|truncat|max.?token/i.test(`${row.message} ${row.error}`)).length,
-      failedJobs: failedJobs.length, details,
+      failedJobs: failedJobs.length,
+      staleChapterCount: staleChapters.length,
+      staleChapters: staleChapters.slice(0, 20), details,
     }, failedJobs,
   }
 }
@@ -43,6 +50,11 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
   if (jobId) updateAnalysisJob(jobId, { status: 'running', stage: 'preparing', progress: 5, message: '正在读取章节并建立分析快照' })
   const allChapters = sql.all<{ id: string; title: string; content: string }>('SELECT id, title, content FROM chapters WHERE project_id = ? AND LENGTH(TRIM(content)) > 0 ORDER BY position', projectId)
   const chapters = onlyChapterIds?.length ? allChapters.filter((chapter) => onlyChapterIds.includes(chapter.id)) : allChapters
+  // 快照：分析开始时的稿件修订与每章内容 hash。写回前双重校验——修订号变了
+  // （替换导入）或章节正文在分析期间被改，旧结果都不允许写回。
+  const revisionAtStart = sql.get<{ r: number }>('SELECT import_revision r FROM projects WHERE id=?', projectId)?.r ?? 0
+  const jobRevision = jobId ? sql.get<{ r: number }>('SELECT import_revision r FROM analysis_jobs WHERE id=?', jobId)?.r ?? revisionAtStart : revisionAtStart
+  const hashAtStart = new Map(allChapters.map((chapter) => [chapter.id, contentHash(chapter.content)]))
   const completedChapterIds = new Set<string>()
   let result: Awaited<ReturnType<typeof analyzeManuscript>>
   try {
@@ -60,6 +72,13 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
     throw error
   }
   const stamp = sql.now()
+  const currentRevision = sql.get<{ r: number }>('SELECT import_revision r FROM projects WHERE id=?', projectId)?.r ?? 0
+  if (currentRevision !== jobRevision) {
+    // 替换导入已发生：旧修订的分析结果禁止写回新稿
+    sql.run('INSERT INTO analysis_runs VALUES (?, ?, ?, ?, ?, ?)', sql.id(), projectId, 'canceled', getModelStatus().model, JSON.stringify({ message: `任务基于稿件修订 r${jobRevision}，当前已是 r${currentRevision}，结果未写入` }), stamp)
+    if (jobId) updateAnalysisJob(jobId, { status: 'canceled', stage: 'canceled', progress: 100, message: `稿件已替换（r${jobRevision} → r${currentRevision}），旧分析结果已丢弃` })
+    return result
+  }
   if (jobId) updateAnalysisJob(jobId, { stage: 'persisting', progress: 82, message: '正在写入候选设定、剧情线与事实摘要' })
   const candidateIds = replaceCandidates ? sql.all<{ id: string }>(`SELECT id FROM entities WHERE project_id = ? AND canon_status = 'candidate'
     AND (json_extract(data, '$.source') = 'model-analysis' OR summary LIKE '从导入文稿中出现%')`, projectId) : []
@@ -120,6 +139,11 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
       if (!from || !to || from === to) continue
       const exists = sql.get('SELECT id FROM relations WHERE project_id=? AND from_entity_id=? AND to_entity_id=? AND type=?', projectId, from, to, relation.type)
       if (!exists) sql.run('INSERT INTO relations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', sql.id(), projectId, from, to, relation.type, relation.label, relation.sentiment, Math.round(relation.strength), '', '', stamp)
+    }
+    for (const chapter of chapters) {
+      const snapshot = hashAtStart.get(chapter.id)
+      const live = contentHash(sql.get<{ content: string }>('SELECT content FROM chapters WHERE id=?', chapter.id)?.content || '')
+      if (snapshot && live === snapshot) sql.run('UPDATE chapters SET analyzed_hash=? WHERE id=?', snapshot, chapter.id)
     }
     sql.run('INSERT INTO analysis_runs VALUES (?, ?, ?, ?, ?, ?)', sql.id(), projectId, result.failures.length ? 'partial' : 'completed', getModelStatus().model, JSON.stringify({ entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, batches: result.batches, failures: result.failures }), stamp)
     sql.run('UPDATE projects SET updated_at=? WHERE id=?', stamp, projectId)

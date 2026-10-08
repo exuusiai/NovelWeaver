@@ -302,7 +302,9 @@ export async function assembleContext(projectId: string, prompt: string, chapter
   const volume = chapterId ? sql.get<Record<string, unknown>>(`SELECT v.title, v.summary FROM volumes v
     JOIN chapter_volume_bindings b ON b.volume_id=v.id WHERE b.chapter_id=?`, chapterId) : undefined
   const hits = await searchMemory(projectId, prompt, 16, chapterId)
-  const allFacts = sql.all<Record<string, unknown>>(`SELECT f.*, c.title chapter_title FROM story_facts f
+  // 事实的时序以"来源章节的当前 position"动态计算（c.position），章节重排后
+  // 事实的新旧自动跟随，不再依赖分析时固化的 introduced_position 快照。
+  const allFacts = sql.all<Record<string, unknown>>(`SELECT f.*, c.title chapter_title, c.position live_position FROM story_facts f
     LEFT JOIN chapters c ON c.id=f.source_chapter_id WHERE f.project_id=? AND f.canon_status IN ('canon','candidate')
     ORDER BY CASE f.canon_status WHEN 'canon' THEN 0 ELSE 1 END, f.importance DESC LIMIT 40`, projectId)
   const allEntities = sql.all<Record<string, unknown>>(`SELECT type, name, summary, data, canon_status, confidence FROM entities
@@ -342,7 +344,8 @@ export async function assembleContext(projectId: string, prompt: string, chapter
   }).sort((a, b) => b.rank - a.rank).slice(0, 12).map((item) => item.row)
   const facts = allFacts.map((row) => {
     const matched = referenceText.includes(normalize(String(row.subject))) || referenceText.includes(normalize(String(row.value)).slice(0, 12))
-    const distance = currentPosition === undefined ? null : Math.abs(currentPosition - Number(row.introduced_position || 0))
+    const basePosition = row.live_position ?? row.introduced_position ?? 0
+    const distance = currentPosition === undefined ? null : Math.abs(currentPosition - Number(basePosition || 0))
     return { row, matched, rank: (matched ? 100 : 0) + (row.canon_status === 'canon' ? 35 : 0) + Number(row.importance) / 5 + distanceWeight(distance) * 10 }
   }).sort((a, b) => b.rank - a.rank).slice(0, 20)
   const make = (kind: string, label: string, text: string, priority: number, relevance = 0): ContextItem => ({ kind, label, text, priority, relevance, tokens: estimateTokens(text) })

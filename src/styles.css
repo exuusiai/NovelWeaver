@@ -1009,3 +1009,6 @@ h1, h2, h3, p { margin: 0; }
 .fact-option strong { display: block; font-size: 11px; color: var(--ink); }
 .fact-option span { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
 .issue-jump { display: flex; gap: 7px; margin-top: 8px; flex-wrap: wrap; }
+
+.quality-grid article.metric-warn { border-color: #dfbbb6; background: #fff9f8; }
+.quality-grid article.metric-warn svg { color: var(--red); }

@@ -17,6 +17,17 @@ export function buildProjectExport(projectId: string) {
     foreshadowing: sql.all('SELECT * FROM foreshadowing WHERE project_id = ?', projectId),
     facts: sql.all('SELECT * FROM story_facts WHERE project_id = ? ORDER BY introduced_position, importance DESC', projectId),
     chapterOutlines: sql.all('SELECT * FROM chapter_outlines WHERE project_id = ? ORDER BY created_at', projectId),
+    // 完整快照：以下为证据链与可复现性数据（正文记忆含向量可省重算；审查与
+    // 生成记录保证"这条设定来自哪一版正文"可追溯）。FTS 索引可重建，不入包。
+    memoryChunks: sql.all('SELECT * FROM memory_chunks WHERE project_id = ? ORDER BY created_at', projectId),
+    imports: sql.all('SELECT * FROM imports WHERE project_id = ?', projectId),
+    reviews: sql.all('SELECT * FROM reviews WHERE project_id = ? ORDER BY created_at', projectId),
+    generations: sql.all('SELECT id, project_id, task_type, input, context_snapshot, output, model, created_at, usage, used FROM generations WHERE project_id = ? ORDER BY created_at', projectId),
+    chapterHistory: sql.all(`SELECT h.* FROM chapter_history h JOIN chapters c ON c.id=h.chapter_id
+      WHERE c.project_id=? ORDER BY h.created_at`, projectId),
+    analysisRuns: sql.all('SELECT * FROM analysis_runs WHERE project_id = ? ORDER BY created_at', projectId),
+    analysisJobs: sql.all('SELECT * FROM analysis_jobs WHERE project_id = ? ORDER BY created_at', projectId),
+    schemaVersion: 3,
     exportedAt: sql.now(),
   }
 }
