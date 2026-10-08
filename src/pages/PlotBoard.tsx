@@ -189,7 +189,48 @@ export function PlotBoard() {
 
     <div className="plot-toolbar"><div className="segmented"><button className={view === 'timeline' ? 'active' : ''} onClick={() => setView('timeline')}><CalendarClock size={15} /> 时间轴</button><button className={view === 'lanes' ? 'active' : ''} onClick={() => setView('lanes')}><Rows3 size={15} /> 多轨线</button><button className={view === 'board' ? 'active' : ''} onClick={() => setView('board')}><CircleDot size={15} /> 状态看板</button></div><div><Button variant="secondary" onClick={() => setEventOpen(true)}><Plus size={15} /> 添加事件</Button></div></div>
     <div className="plot-content-grid">
-      <section className="surface event-surface">{view === 'timeline' ? <div className="timeline">{data.events.map((event, index) => { const plot = data.plotlines.find((item) => item.id === event.plotline_id); return <article key={event.id}><div className="timeline-axis"><span>{index + 1}</span><i /></div><div className="event-card"><header><div><Badge tone={event.status === 'written' ? 'teal' : 'amber'}>{event.status === 'written' ? '已写' : '计划'}</Badge>{plot && <span className="plot-tag" style={{ color: plot.color }}>{plot.name}</span>}</div><time>{event.story_time || '时间待定'}</time></header><h3>{event.title}</h3><p>{event.summary || '暂无事件摘要。'}</p><footer>{event.location && <span>{event.location}</span>}<span>{event.participants.length} 名参与者</span></footer></div></article> })}</div> : view === 'lanes' ? <div className="plot-lanes">{[...data.plotlines, { id: '', name: '未归线事件', type: 'subplot', summary: '', color: '#89918f', status: 'active' }].map((plotline) => { const events = data.events.filter((event) => (event.plotline_id || '') === plotline.id); if (!events.length) return null; return <section key={plotline.id || 'unassigned'}><header style={{ borderColor: plotline.color }}><strong>{plotline.name}</strong><span>{events.length} 个节点</span></header><div>{events.map((event) => <article key={event.id}><i style={{ background: plotline.color }} /><time>{event.story_time || `#${event.narrative_order}`}</time><strong>{event.title}</strong><p>{event.summary}</p><small>{event.participants.join('、') || '参与者待定'}</small></article>)}</div></section> })}</div> : <div className="event-board">{['planned', 'written', 'revealed'].map((status) => <div key={status}><header>{status === 'planned' ? '计划中' : status === 'written' ? '已写入' : '已揭示'} <span>{data.events.filter((event) => event.status === status).length}</span></header>{data.events.filter((event) => event.status === status).map((event) => <article key={event.id}><strong>{event.title}</strong><p>{event.summary}</p></article>)}</div>)}</div>}</section>
+      <section className="surface event-surface">{view === 'timeline' ? <div className="timeline">{data.events.map((event, index) => { const plot = data.plotlines.find((item) => item.id === event.plotline_id); return <article key={event.id}><div className="timeline-axis"><span>{index + 1}</span><i /></div><div className="event-card"><header><div><Badge tone={event.status === 'written' ? 'teal' : 'amber'}>{event.status === 'written' ? '已写' : '计划'}</Badge>{plot && <span className="plot-tag" style={{ color: plot.color }}>{plot.name}</span>}</div><time>{event.story_time || '时间待定'}</time></header><h3>{event.title}</h3><p>{event.summary || '暂无事件摘要。'}</p><footer>{event.location && <span>{event.location}</span>}<span>{event.participants.length} 名参与者</span></footer></div></article> })}</div> : view === 'lanes' ? (() => {
+            // 甘特式布局：以全部事件 narrative_order 为主时间轴刻度（主线事件即刻度锚点）。
+            // 主线固定首行；支线每线一行，事件按全局序号对位到主轴；同一支线内
+            // 序号跨度形成连续段（bar），相邻段之间自动留白显示并行/休眠。
+            const sortedEvents = [...data.events].sort((a, b) => a.narrative_order - b.narrative_order)
+            const orders = sortedEvents.map((event) => event.narrative_order)
+            const minOrder = Math.min(...orders), maxOrder = Math.max(...orders)
+            const span = Math.max(1, maxOrder - minOrder + 1)
+            const colOf = (order: number) => ((order - minOrder) / span) * 100
+            const mainPlot = data.plotlines.find((item) => item.type === 'main')
+            const mainEvents = sortedEvents.filter((event) => event.plotline_id === mainPlot?.id)
+            const subLines = data.plotlines.filter((item) => item.id !== mainPlot?.id && sortedEvents.some((event) => event.plotline_id === item.id))
+            const unassigned = sortedEvents.filter((event) => !event.plotline_id)
+            const barSegments = (events: typeof sortedEvents) => {
+              const segments: Array<{ from: number; to: number; events: typeof sortedEvents }> = []
+              for (const event of [...events].sort((a, b) => a.narrative_order - b.narrative_order)) {
+                const last = segments[segments.length - 1]
+                if (last && event.narrative_order - last.to <= 2) { last.to = event.narrative_order; last.events.push(event) }
+                else segments.push({ from: event.narrative_order, to: event.narrative_order, events: [event] })
+              }
+              return segments
+            }
+            return <div className="gantt-plot">
+              <div className="gantt-axis">{Array.from({ length: Math.min(span, 40) }, (_, index) => {
+                const order = minOrder + Math.round((index / Math.max(1, Math.min(span, 40) - 1)) * (span - 1))
+                return <span key={index} style={{ left: `${colOf(order)}%` }}>{order}</span>
+              })}</div>
+              <div className="gantt-row gantt-main">
+                <header style={{ borderColor: mainPlot?.color || '#14746f' }}><strong>{mainPlot?.name || '主线'}</strong><span>{mainEvents.length} 锚点</span></header>
+                <div className="gantt-track">{barSegments(mainEvents).map((segment, index) => <div key={index} className="gantt-bar" style={{ left: `${colOf(segment.from)}%`, width: `${Math.max(2.2, colOf(segment.to) - colOf(segment.from) + 2.2)}%` }} title={segment.events.map((event) => event.title).join(' / ')}>
+                  <i style={{ background: mainPlot?.color || '#14746f' }} />
+                  <em>{segment.events[0].title}{segment.events.length > 1 ? ` +${segment.events.length - 1}` : ''}</em>
+                  {segment.events.map((event) => <b key={event.id} style={{ left: `${((event.narrative_order - segment.from) / Math.max(1, segment.to - segment.from)) * 100}%` }} title={`${event.story_time || `#${event.narrative_order}`} ${event.title}`} />)}
+                </div>)}</div>
+              </div>
+              {subLines.map((plotline) => { const events = sortedEvents.filter((event) => event.plotline_id === plotline.id); return <div key={plotline.id} className="gantt-row"><header style={{ borderColor: plotline.color }}><strong>{plotline.name}</strong><span>{events.length} 节点</span></header><div className="gantt-track">{barSegments(events).map((segment, index) => <div key={index} className="gantt-bar sub" style={{ left: `${colOf(segment.from)}%`, width: `${Math.max(2.2, colOf(segment.to) - colOf(segment.from) + 2.2)}%` }} title={segment.events.map((event) => event.title).join(' / ')}>
+                <i style={{ background: plotline.color }} />
+                <em>{segment.events[0].title}{segment.events.length > 1 ? ` +${segment.events.length - 1}` : ''}</em>
+              </div>)}</div></div> })}
+              {unassigned.length > 0 && <div className="gantt-row"><header style={{ borderColor: '#89918f' }}><strong>未归线事件</strong><span>{unassigned.length} 节点</span></header><div className="gantt-track">{unassigned.map((event) => <div key={event.id} className="gantt-dot" style={{ left: `${colOf(event.narrative_order)}%` }} title={event.title} />)}</div></div>}
+            </div>
+          })() : <div className="event-board">{['planned', 'written', 'revealed'].map((status) => <div key={status}><header>{status === 'planned' ? '计划中' : status === 'written' ? '已写入' : '已揭示'} <span>{data.events.filter((event) => event.status === status).length}</span></header>{data.events.filter((event) => event.status === status).map((event) => <article key={event.id}><strong>{event.title}</strong><p>{event.summary}</p></article>)}</div>)}</div>}</section>
       <aside className="plot-side"><section className="surface foreshadow-panel"><header><div><Flag size={17} /><h3>伏笔与承诺</h3></div><Badge tone="amber">{data.foreshadowing.filter((item) => item.status !== 'resolved').length} 待回收</Badge></header>{data.foreshadowing.map((item) => <article key={item.id}><div><span className={`foreshadow-status ${item.status}`} /><strong>{item.title}</strong></div><p>{item.notes}</p><small>{item.status === 'developing' ? '正在强化' : item.status === 'resolved' ? '已回收' : '等待回收'}</small></article>)}</section></aside>
     </div>
 

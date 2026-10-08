@@ -390,6 +390,25 @@ h1, h2, h3, p { margin: 0; }
 .event-board strong { font-size: 10px; }
 .event-board p { color: var(--muted); font-size: 8px; line-height: 1.5; margin-top: 4px; }
 .plot-page, .plot-content-grid, .plot-lanes { min-width: 0; max-width: 100%; }
+
+/* 甘特式剧情线布局：主时间轴为全事件叙事序号刻度，主线锚点轨 + 支线轨按全局序号对位 */
+.gantt-plot { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.gantt-axis { position: relative; height: 20px; margin-left: 148px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.gantt-axis span { position: absolute; transform: translateX(-50%); bottom: 3px; color: var(--faint); font-size: 8px; }
+.gantt-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 8px; align-items: stretch; }
+.gantt-row > header { border-left: 4px solid; border-radius: 3px; background: #f7f7f3; padding: 7px 9px; display: flex; flex-direction: column; gap: 3px; justify-content: center; overflow: hidden; }
+.gantt-row > header strong { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gantt-row > header span { color: var(--faint); font-size: 8px; }
+.gantt-row.gantt-main > header { background: #eef4f2; }
+.gantt-track { position: relative; min-height: 44px; background: linear-gradient(to right, rgba(222, 223, 217, .35) 1px, transparent 1px); background-size: calc(100% / 8) 100%; border-radius: 4px; }
+.gantt-bar { position: absolute; top: 50%; transform: translateY(-50%); height: 22px; border-radius: 11px; background: #e2ece9; border: 1px solid rgba(20, 116, 111, .25); display: flex; align-items: center; gap: 4px; padding: 0 9px 0 4px; overflow: hidden; cursor: default; transition: box-shadow var(--anim); }
+.gantt-bar:hover { box-shadow: 0 3px 10px rgba(30, 38, 36, .16); z-index: 2; }
+.gantt-bar.sub { background: #f3f0e8; border-color: rgba(154, 116, 41, .25); height: 20px; }
+.gantt-bar i { width: 12px; height: 12px; flex: 0 0 12px; border-radius: 50%; }
+.gantt-bar em { font-style: normal; font-size: 9px; color: #3c4542; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gantt-bar b { position: absolute; top: -3px; width: 5px; height: 5px; border-radius: 50%; background: var(--ink); opacity: .55; }
+.gantt-dot { position: absolute; top: 50%; width: 9px; height: 9px; transform: translate(-50%, -50%); border-radius: 50%; background: #89918f; opacity: .6; }
+.gantt-dot:hover { opacity: 1; }
 .plot-lanes { display: grid; gap: 12px; overflow: hidden; }
 .plot-lanes > section { display: grid; grid-template-columns: 145px minmax(0, 1fr); min-width: 0; max-width: 100%; border-bottom: 1px solid var(--line-soft); padding-bottom: 12px; }
 .plot-lanes > section > header { border-left: 4px solid; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
