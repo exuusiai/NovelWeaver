@@ -9,6 +9,40 @@ describe('import pipeline', () => {
     expect(result[1].content).toContain('季岚')
   })
 
+  it('识别 PDF 无分隔回目并剔除目录页码条目', () => {
+    const text = [
+      '前 言',
+      '这本书讲的是三分天下的故事。',
+      '',
+      '目 录',
+      '第一回宴桃园豪杰三结义斩黄巾英雄首立功.1',
+      '第二回张翼德怒鞭督邮 何国舅谋诛宦竖. 6',
+      '第三回议温明董卓叱丁原馈金珠李肃说吕布……•…"12',
+      '',
+      '第一回宴桃园豪杰三结义斩黄巾英雄首立功',
+      '话说天下大势，分久必合，合久必分。刘备在桃园与关羽张飞结义。',
+      '',
+      '第二回张翼德怒鞭督邮 何国舅谋诛宦竖',
+      '且说督邮来到县中，众人议论纷纷。张飞大怒，睁圆环眼。',
+      '',
+      '第三回议温明董卓叱丁原馈金珠李肃说吕布',
+      '董卓在温明园中大宴宾客，吕布站在丁原身后，气宇轩昂。',
+    ].join('\n')
+    const result = splitChaptersDetailed(text)
+    expect(result.diagnostics.chapters).toBe(3)
+    expect(result.chapters.map((chapter) => chapter.title)).toEqual(['第一回宴桃园豪杰三结义斩黄巾英雄首立功', '第二回张翼德怒鞭督邮 何国舅谋诛宦竖', '第三回议温明董卓叱丁原馈金珠李肃说吕布'])
+    expect(result.chapters[0].content).toContain('桃园')
+    expect(result.chapters[0].content).not.toContain('目 录')
+    expect(result.diagnostics.warnings.some((warning) => warning.includes('目录页条目'))).toBe(true)
+  })
+
+  it('不把行首散文"第一回合"当章节标题', () => {
+    const result = splitChaptersDetailed('第一回合就开始落后。\n\n第二回合的争夺更加激烈，双方你来我往互不相让，场面十分胶着。')
+    expect(result.diagnostics.headingCount).toBe(0)
+    expect(result.chapters).toHaveLength(1)
+    expect(result.chapters[0].title).toBe('导入文稿')
+  })
+
   it('chunks long text with overlap without losing the ending', () => {
     const source = '甲'.repeat(1800)
     const chunks = chunkText(source, 700, 100)

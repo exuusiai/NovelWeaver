@@ -10,7 +10,7 @@ import { asyncRoute, analysisModelRequired, bindChapterToVolume, decodeRow, dedu
 
 export const ingestRouter = Router()
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 40 * 1024 * 1024 } })
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } })
 
 ingestRouter.post('/api/projects/:projectId/import/preview', upload.single('file'), (req, res) => {
   const projectId = String(req.params.projectId)
