@@ -987,3 +987,25 @@ h1, h2, h3, p { margin: 0; }
 .ai-auto_resolve { background: var(--teal-soft); color: #12645e; }
 .ai-suggest_ignore { background: var(--blue-soft); color: #3d6079; }
 .ai-needs_human { background: var(--amber-soft); color: #82601d; }
+
+/* 移动端顶栏项目切换器：≤860px 时侧栏切换器被隐藏，顶栏补一个 */
+.mobile-project-select { display: none; }
+@media (max-width: 860px) {
+  .mobile-project-select { display: block; max-width: 34vw; height: 34px; border: 1px solid var(--line); border-radius: 5px; background: white; color: var(--ink); font-size: 12px; padding: 0 6px; }
+}
+/* 移动端章节导航：≤640px 时左侧章节栏被隐藏，编辑器工具栏补 上一章/下一章/跳转 */
+.chapter-nav-mobile { display: none; }
+@media (max-width: 640px) {
+  .chapter-nav-mobile { display: flex; align-items: center; gap: 4px; }
+  .chapter-nav-mobile select { max-width: 30vw; height: 30px; border: 1px solid var(--line); border-radius: 5px; background: white; font-size: 11px; padding: 0 4px; }
+}
+
+/* 审查：事实冲突双卡选择与跳转入口 */
+.fact-pick { display: grid; gap: 6px; margin-top: 9px; }
+.fact-option { display: flex; gap: 8px; align-items: flex-start; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; cursor: pointer; background: white; transition: border-color var(--anim), background-color var(--anim); }
+.fact-option:hover { border-color: #9fb5b0; }
+.fact-option.chosen { border-color: var(--teal); background: #f0f7f5; }
+.fact-option input { margin-top: 3px; accent-color: var(--teal); }
+.fact-option strong { display: block; font-size: 11px; color: var(--ink); }
+.fact-option span { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
+.issue-jump { display: flex; gap: 7px; margin-top: 8px; flex-wrap: wrap; }
