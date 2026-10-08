@@ -144,8 +144,17 @@ function cleanHeading(line: string) {
   return line.replace(/^#{1,6}\s*/, '').replace(/[\u00a0\u3000]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+// 标题判定的匹配形态：压缩 CJK 间空格以适配"第 一 卷 光 晕 之 卷"式排版书；
+// 在序号词（章/卷/部/篇，不含回）后恢复一个空格以维持原有文法。仅用于匹配，标题保留原文。
+function headingMatchForm(line: string) {
+  return cleanHeading(line)
+    .replace(/([\u3400-\u9fff]) (?=[\u3400-\u9fff])/g, '$1')
+    .replace(/^(第[零〇一二三四五六七八九十百千万两0-9]+[章卷部篇])(?=[\u3400-\u9fff])/u, '$1 ')
+    .trim()
+}
+
 function headingKind(line: string): 'chapter' | 'volume' | null {
-  const clean = cleanHeading(line)
+  const clean = headingMatchForm(line)
   if (chapterLine.test(clean) || namedHeading.test(clean)) return 'chapter'
   // 无分隔连写："第一回宴桃园豪杰三结义"（PDF 扫描书常见）。要求行短、
   // 标题首字不是虚词，避免"第一回合""第二章讲了"这类散文行首误判
@@ -156,7 +165,7 @@ function headingKind(line: string): 'chapter' | 'volume' | null {
 }
 
 function headingKey(title: string) {
-  const clean = cleanHeading(title).toLowerCase()
+  const clean = headingMatchForm(title).toLowerCase()
   const match = clean.match(new RegExp(`^(第${ordinal}[章回节]|(?:chapter|part)\\s+[0-9ivxlcdm]+|序章|楔子|引子|前言|序言|尾声|终章|后记|番外(?:篇)?(?:[一二三四五六七八九十0-9]+)?)`, 'i'))
   return (match?.[1] || clean).replace(/\s+/g, '')
 }
@@ -200,13 +209,13 @@ export function splitChaptersDetailed(text: string): SplitResult {
   const headings: Array<{ line: number; title: string; kind: 'chapter' | 'volume' }> = []
   let removedTocEntries = 0
   for (let index = 0; index < lines.length; index += 1) {
-    const clean = cleanHeading(lines[index])
-    const kind = headingKind(clean)
+    const matchForm = headingMatchForm(lines[index])
+    const kind = headingKind(lines[index])
     if (!kind) continue
     // 第X回 + 行尾页码（".372"/"……611"）是 PDF 目录条目：剔除，避免既产生
     // 假章节、又因 headingKey 同 key 把正文真标题当重复吃掉
-    if (kind === 'chapter' && tocPageSuffix.test(clean)) { removedTocEntries += 1; continue }
-    headings.push({ line: index, title: clean, kind })
+    if (kind === 'chapter' && tocPageSuffix.test(matchForm)) { removedTocEntries += 1; continue }
+    headings.push({ line: index, title: cleanHeading(lines[index]), kind })
   }
 
   const warnings: string[] = []
@@ -257,12 +266,26 @@ export function splitChaptersDetailed(text: string): SplitResult {
   const previousSection = bodyStartOrder > 0 ? sections[bodyStartOrder - 1] : undefined
   const prefaceStart = previousSection ? previousSection.headingLine + 1 : 0
   const firstHeadingLine = firstBodySection?.headingLine ?? (headings.find((item) => item.kind === 'chapter')?.line ?? 0)
-  const prefaceText = formatBody(lines.slice(prefaceStart, firstHeadingLine).join('\n'))
+  let prefaceText = formatBody(lines.slice(prefaceStart, firstHeadingLine).join('\n'))
+  // 序言类标题（前言/序言/序 等）经字间空格压缩后成为首个章节标题时，其前置块必然为空；
+  // 该标题应视作书前序言：并入前置内容而不是生成只有标题的空章。
+  const firstSelected = workingSections[0]
+  if (firstSelected && /^(?:前\s*言|序\s*言|序|自\s*序|弁\s*言)$/.test(firstSelected.title)) {
+    prefaceText = formatBody(`${firstSelected.title}\n\n${firstSelected.content}\n\n${prefaceText}`)
+    selected.shift()
+  }
   if (prefaceText.replace(/\s/g, '').length >= 80 && !/^(?:目录|contents?)\b/i.test(prefaceText)) {
     selected.unshift({ title: '导入前置内容', key: '__preface__', content: prefaceText, order: -1, volume: '', headingLine: prefaceStart })
   }
+  // 显示归一：整行多处字间空格（≥3 处）才是"逐字空格"排版书，压缩为规范形态；
+  // 只有 1-2 处空格的（如回目对仗"怒鞭督邮 何国舅"）是排版语义，保留原文。
+  const displayTitle = (value: string) => {
+    const spaces = (value.match(/[\u3400-\u9fff] (?=[\u3400-\u9fff])/g) || []).length
+    if (spaces < 3) return value.trim()
+    return headingMatchForm(value)
+  }
   const mapped = selected.map((section, position) => ({
-    title: section.volume && !section.title.startsWith(section.volume) ? `${section.volume} · ${section.title}` : section.title,
+    title: displayTitle(section.volume && !section.title.startsWith(section.volume) ? `${section.volume} · ${section.title}` : section.title),
     content: section.content,
     position,
     summary: summarize(section.content),

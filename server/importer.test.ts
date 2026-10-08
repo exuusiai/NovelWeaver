@@ -84,6 +84,13 @@ describe('import pipeline', () => {
     expect(result.duplicateContents).toBe(1)
   })
 
+  it('识别字间空格排版的卷章标题', () => {
+    const text = '第 一 卷 光 晕 之 卷\n\n序言内容。\n\n第 一 章 雾 港\n\n林雾来到雾港。\n\n第 二 章 白 塔\n\n季岚看向白塔。'
+    const result = splitChaptersDetailed(text)
+    expect(result.diagnostics.chapters).toBe(2)
+    expect(result.chapters[0].title).toMatch(/第一章\s*雾\s*港/)
+  })
+
   it('treats title-only and punctuation-only sections as empty', () => {
     expect(isEffectivelyEmptyChapter('第三章 风雪', '第三章 风雪\n……')).toBe(true)
     expect(isEffectivelyEmptyChapter('第三章 风雪', '商队在风雪中绕过山口，终于看见了北境城墙。')).toBe(false)

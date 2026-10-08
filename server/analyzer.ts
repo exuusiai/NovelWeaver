@@ -176,8 +176,113 @@ export interface AnalysisOptions {
   shouldPause?: () => boolean
 }
 
+const rosterSchema = z.object({
+  characters: z.array(z.object({
+    name: z.string().min(1),
+    aliases: z.array(z.string()).default([]),
+    role: z.string().default(''),
+    evidence: z.string().default(''),
+  })).default([]),
+  worldNotes: z.string().default(''),
+})
+
+export type CharacterRoster = z.infer<typeof rosterSchema>
+
+const chineseNamePattern = /^[\u4e00-\u9fff·]{2,8}$/
+
+// 第一遍：全书快扫产出候选人物名册。分批读全文，每批只提取"有专名的出场人物"，
+// 不做摘要和关系——任务简单、prompt 短，漏检率远低于一次性结构化抽取。
+// 这是 MiroFish 本体约束思想的移植：先对语料建立"该找什么"的先验，再定向抽取。
+export async function buildCharacterRoster(chapters: AnalysisChapter[], options: AnalysisOptions = {}, maxChars = 24000) {
+  const scanned: z.infer<typeof rosterSchema>['characters'] = []
+  const notes: string[] = []
+  const chunks = batches(chapters, maxChars)
+  for (const [index, group] of chunks.entries()) {
+    while (options.shouldPause?.()) await new Promise((resolve) => setTimeout(resolve, 800))
+    const manuscript = group.map((chapter) => `<<<${chapter.title}>>>\n${chapter.content}`).join('\n')
+    const result = await structuredJson(rosterSchema, `通读以下文稿片段，列出其中**出场并有名字的角色**（主角、配角、被提及的历史人物都要）。
+对每个角色：name 用最常见的称呼写法（2-8 个汉字，或带·的译名）；aliases 收录该片段中的其他称呼（全名、简称、称号、昵称）；role 用不超过 15 字说明身份（如"男主角，卡佩家族次子"）；evidence 引一句能证明其出场的原文（不超过 30 字）。
+注意：只列角色（人），不列地点、组织、物品、概念；代词（我、他）与职业统称（国王、主教）不是名字，除非它在该片段被当作专名使用；宁多勿漏，后续会做全书频次核验。
+同时用一句 worldNotes（不超过 50 字）概括该片段的题材与叙事背景。
+返回：{"characters":[{"name":"","aliases":[],"role":"","evidence":""}],"worldNotes":""}\n${manuscript}`, `人物名册快扫 ${index + 1}/${chunks.length}`)
+    scanned.push(...result.characters)
+    if (result.worldNotes) notes.push(result.worldNotes)
+    await options.onProgress?.({ completed: index + 1, total: chunks.length, chapterIds: group.map((chapter) => chapter.id), stage: 'roster' })
+  }
+  // 合并同一个人的不同称呼：名称或别名互相包含即视为同一（隆达/隆达·卡佩）
+  const merged: typeof scanned = []
+  for (const candidate of scanned) {
+    const names = new Set([candidate.name, ...candidate.aliases].map(normalizedName).filter(Boolean))
+    const hit = merged.find((existing) => {
+      const existingNames = new Set([existing.name, ...existing.aliases].map(normalizedName))
+      return [...names].some((name) => [...existingNames].some((other) => name.includes(other) || other.includes(name)))
+    })
+    if (!hit) { merged.push(candidate); continue }
+    hit.aliases = [...new Set([...hit.aliases, candidate.name, ...candidate.aliases].filter((name) => name && name !== hit.name))].slice(0, 10)
+    if (!hit.role && candidate.role) hit.role = candidate.role
+    if (!hit.evidence && candidate.evidence) hit.evidence = candidate.evidence
+  }
+  return { roster: merged, worldNotes: notes.slice(0, 3).join('；') }
+}
+
+// 频次核验：名册候选必须在正文里真实出现（防快扫幻觉），频次同时是重要度信号
+export function verifyRosterAgainstText(roster: CharacterRoster['characters'], chapters: AnalysisChapter[]) {
+  const corpus = chapters.map((chapter) => chapter.content).join('\n')
+  return roster
+    .map((entry) => {
+      let count = 0
+      for (const name of [entry.name, ...entry.aliases]) {
+        if (!name) continue
+        let from = corpus.indexOf(name)
+        while (from >= 0) { count += 1; from = corpus.indexOf(name, from + name.length) }
+      }
+      return { ...entry, mentions: count }
+    })
+    .filter((entry) => entry.mentions > 0)
+    .sort((left, right) => right.mentions - left.mentions)
+}
+
+// 类型矫正：模型把主角分类成 term/system 是实测最高频错误。规则：名册确认的人物名
+// 与已提取实体名匹配（含别名互相包含）时，强制归位 character，并保留原实体作为别名并入。
+export function rectifyEntityTypes<T extends { type: string; name: string; aliases: string[]; summary?: string }>(entities: T[], verifiedRoster: Array<{ name: string; aliases: string[]; role?: string }>) {
+  const characterNames = new Set<string>()
+  for (const entry of verifiedRoster) {
+    for (const name of [entry.name, ...entry.aliases]) {
+      const normalized = normalizedName(name)
+      if (normalized && (chineseNamePattern.test(name) || normalized.length >= 2)) characterNames.add(normalized)
+    }
+  }
+  const output: T[] = []
+  for (const entity of entities) {
+    if (entity.type !== 'character') {
+      const names = [entity.name, ...entity.aliases].map(normalizedName)
+      const isCharacter = names.some((name) => name && (characterNames.has(name) || [...characterNames].some((candidate) => name.includes(candidate) || candidate.includes(name))))
+      if (isCharacter) output.push({ ...entity, type: 'character' })
+      else output.push(entity)
+    } else output.push(entity)
+  }
+  // 同名合并：矫正后可能出现 name 相同的 character 与 term 两条，保留 character
+  const seen = new Set<string>()
+  return output.filter((entity) => {
+    if (entity.type !== 'character') return true
+    const key = normalizedName(entity.name)
+    if (seen.has(key)) return false
+    seen.add(key); return true
+  })
+}
+
 export async function analyzeManuscript(chapters: AnalysisChapter[], options: AnalysisOptions = {}) {
-  if (!chapters.length) return { entities: [], events: [], plotlines: [], relations: [], batches: 0, failures: [] as Array<{ chapterIds: string[]; message: string }> }
+  if (!chapters.length) return { entities: [], events: [], plotlines: [], relations: [], batches: 0, failures: [] as Array<{ chapterIds: string[]; message: string }>, roster: [] as CharacterRoster['characters'] }
+  // 第一遍：全书人物名册（简单任务低漏检）+ 正文频次核验（防幻觉、定重要度）
+  let verifiedRoster: Array<CharacterRoster['characters'][number] & { mentions: number }> = []
+  try {
+    const { roster } = await buildCharacterRoster(chapters, { shouldPause: options.shouldPause })
+    verifiedRoster = verifyRosterAgainstText(roster, chapters)
+    await options.onProgress?.({ completed: 0, total: 1, chapterIds: [], stage: 'roster-verified' })
+  } catch { /* 名册失败不阻塞主分析，回退单遍模式 */ }
+  const rosterDigest = verifiedRoster.length
+    ? `\n【已确认出场人物名册（全书核验，按出场频次降序，抽取时必须使用这些规范名；每批遇到其中人物必须提取，不得改判为 term/system）】\n${verifiedRoster.slice(0, 60).map((entry) => `${entry.name}${entry.aliases.length ? `（又称：${entry.aliases.slice(0, 3).join('、')}）` : ''}${entry.role ? `｜${entry.role}` : ''}｜出场 ${entry.mentions} 次`).join('\n')}\n`
+    : ''
   const entityRows: AnalysisEntity[] = []
   const eventRows: AnalysisEvent[] = []
   const relationRows: AnalysisRelation[] = []
@@ -186,7 +291,7 @@ export async function analyzeManuscript(chapters: AnalysisChapter[], options: An
   const failures: Array<{ chapterIds: string[]; message: string }> = []
   const analysisPrompt = (group: AnalysisChapter[]) => {
     const manuscript = group.map((chapter) => `\n<<<章节：${chapter.title}>>>\n${chapter.content}`).join('\n')
-    return `分析以下文稿。返回：
+    return `${rosterDigest}分析以下文稿。返回：
 {"entities":[{"type":"character|location|faction|system|item|world|term","name":"规范专名","aliases":[],"summary":"仅含明确事实的摘要","data":{},"evidence":["章节名：不超过40字的原文证据"]}],"events":[{"title":"事件名","summary":"事件发生了什么以及造成何种状态变化","chapterTitle":"原章节名","storyTime":"原文明示的时间或空字符串","participants":["规范人物名"],"location":"规范地点名或空字符串","cause":"明确原因或空字符串","consequence":"明确结果或空字符串"}],"relations":[{"from":"实体规范名","to":"实体规范名","type":"family|alliance|enemy|same_person|member|located_at 等","label":"中文关系标签","sentiment":"positive|neutral|mixed|negative","strength":50,"evidence":"简短原文依据"}]}
 data 按类型填写：人物 aliases/narrativeIdentities/role/fullName/pronouns/age/birth/species/occupation/faction/appearance/distinguishingMarks/health/personality/desire/need/fear/flaw/falseBelief/bottomLine/secret/strengths/weaknesses/abilities/knowledge/voice/mannerisms/background/trauma/arc/status/possessions；地点 geography/terrain/climate/districts/access/transport/population/species/governance/law/economy/resources/culture/language/religion/customs/food/architecture/hazards/history/currentConflict/sceneUse；势力 type/ideology/goal/leader/headquarters/hierarchy/ranks/recruitment/members/resources/territory/methods/laws/allies/enemies/reputation/internalConflict/history/status；体系 category/source/principles/tiers/acquisition/training/activation/abilities/cost/limitations/counters/exceptions/artifacts/users/institutions/socialImpact/history；物品 category/owner/creator/origin/appearance/material/function/activation/limitations/cost/status/location/history/symbolism；世界 era/calendar/geography/cosmology/species/politics/law/economy/resources/religion/technology/transport/languages/education/customs/dailyLife/conflicts/history；术语 definition/aliases/category/usage/origin/firstAppearance/relatedTerms/misconceptions。
 保持精确简洁：summary、cause、consequence 和 data 中每个文本字段不超过 120 字；每个实体最多 2 条 evidence；数组去重且不超过 12 项。不要为了填满字段而推测。
@@ -237,7 +342,8 @@ ${manuscript}`
     await options.onProgress?.({ completed: batchIndex + 1, total: chapterBatches.length, chapterIds: group.map((chapter) => chapter.id), stage: 'extracting' })
   }
 
-  const entities = mergeEntities(entityRows, relationRows)
+  const mergedEntities = mergeEntities(entityRows, relationRows)
+  const entities = rectifyEntityTypes(mergedEntities, verifiedRoster)
   const eventKey = new Set<string>()
   const events = eventRows.filter((event) => {
     const key = `${event.chapterTitle}|${event.title}|${event.summary.slice(0, 40)}`
@@ -254,5 +360,5 @@ ${manuscript}`
     if (relationKeys.has(key) || relation.from === relation.to) return false
     relationKeys.add(key); return true
   })
-  return { entities, events, plotlines, relations, batches: processedBatches, failures }
+  return { entities, events, plotlines, relations, batches: processedBatches, failures, roster: verifiedRoster }
 }
