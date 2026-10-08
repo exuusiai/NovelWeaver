@@ -206,30 +206,30 @@ export function PlotBoard() {
               const segments: Array<{ from: number; to: number; events: typeof sortedEvents }> = []
               for (const event of [...events].sort((a, b) => a.narrative_order - b.narrative_order)) {
                 const last = segments[segments.length - 1]
-                if (last && event.narrative_order - last.to <= 2) { last.to = event.narrative_order; last.events.push(event) }
+                if (last && event.narrative_order - last.to <= 4) { last.to = event.narrative_order; last.events.push(event) }
                 else segments.push({ from: event.narrative_order, to: event.narrative_order, events: [event] })
               }
               return segments
             }
-            return <div className="gantt-plot">
+            return <div className="gantt-scroll"><div className="gantt-plot" style={{ minWidth: `${Math.max(24, Math.min(span, 120)) * 64}px` }}>
               <div className="gantt-axis">{Array.from({ length: Math.min(span, 40) }, (_, index) => {
                 const order = minOrder + Math.round((index / Math.max(1, Math.min(span, 40) - 1)) * (span - 1))
                 return <span key={index} style={{ left: `${colOf(order)}%` }}>{order}</span>
               })}</div>
               <div className="gantt-row gantt-main">
                 <header style={{ borderColor: mainPlot?.color || '#14746f' }}><strong>{mainPlot?.name || '主线'}</strong><span>{mainEvents.length} 锚点</span></header>
-                <div className="gantt-track">{barSegments(mainEvents).map((segment, index) => <div key={index} className="gantt-bar" style={{ left: `${colOf(segment.from)}%`, width: `${Math.max(2.2, colOf(segment.to) - colOf(segment.from) + 2.2)}%` }} title={segment.events.map((event) => event.title).join(' / ')}>
+                <div className="gantt-track">{barSegments(mainEvents).map((segment, index) => <div key={index} className="gantt-bar" style={{ left: `${colOf(segment.from)}%`, width: `${Math.max(3.4, colOf(segment.to) - colOf(segment.from) + 3.4)}%` }} title={segment.events.map((event) => event.title).join(' / ')}>
                   <i style={{ background: mainPlot?.color || '#14746f' }} />
                   <em>{segment.events[0].title}{segment.events.length > 1 ? ` +${segment.events.length - 1}` : ''}</em>
                   {segment.events.map((event) => <b key={event.id} style={{ left: `${((event.narrative_order - segment.from) / Math.max(1, segment.to - segment.from)) * 100}%` }} title={`${event.story_time || `#${event.narrative_order}`} ${event.title}`} />)}
                 </div>)}</div>
               </div>
-              {subLines.map((plotline) => { const events = sortedEvents.filter((event) => event.plotline_id === plotline.id); return <div key={plotline.id} className="gantt-row"><header style={{ borderColor: plotline.color }}><strong>{plotline.name}</strong><span>{events.length} 节点</span></header><div className="gantt-track">{barSegments(events).map((segment, index) => <div key={index} className="gantt-bar sub" style={{ left: `${colOf(segment.from)}%`, width: `${Math.max(2.2, colOf(segment.to) - colOf(segment.from) + 2.2)}%` }} title={segment.events.map((event) => event.title).join(' / ')}>
+              {subLines.map((plotline) => { const events = sortedEvents.filter((event) => event.plotline_id === plotline.id); return <div key={plotline.id} className="gantt-row"><header style={{ borderColor: plotline.color }}><strong>{plotline.name}</strong><span>{events.length} 节点</span></header><div className="gantt-track">{barSegments(events).map((segment, index) => <div key={index} className="gantt-bar sub" style={{ left: `${colOf(segment.from)}%`, width: `${Math.max(3.4, colOf(segment.to) - colOf(segment.from) + 3.4)}%` }} title={segment.events.map((event) => event.title).join(' / ')}>
                 <i style={{ background: plotline.color }} />
                 <em>{segment.events[0].title}{segment.events.length > 1 ? ` +${segment.events.length - 1}` : ''}</em>
               </div>)}</div></div> })}
               {unassigned.length > 0 && <div className="gantt-row"><header style={{ borderColor: '#89918f' }}><strong>未归线事件</strong><span>{unassigned.length} 节点</span></header><div className="gantt-track">{unassigned.map((event) => <div key={event.id} className="gantt-dot" style={{ left: `${colOf(event.narrative_order)}%` }} title={event.title} />)}</div></div>}
-            </div>
+            </div></div>
           })() : <div className="event-board">{['planned', 'written', 'revealed'].map((status) => <div key={status}><header>{status === 'planned' ? '计划中' : status === 'written' ? '已写入' : '已揭示'} <span>{data.events.filter((event) => event.status === status).length}</span></header>{data.events.filter((event) => event.status === status).map((event) => <article key={event.id}><strong>{event.title}</strong><p>{event.summary}</p></article>)}</div>)}</div>}</section>
       <aside className="plot-side"><section className="surface foreshadow-panel"><header><div><Flag size={17} /><h3>伏笔与承诺</h3></div><Badge tone="amber">{data.foreshadowing.filter((item) => item.status !== 'resolved').length} 待回收</Badge></header>{data.foreshadowing.map((item) => <article key={item.id}><div><span className={`foreshadow-status ${item.status}`} /><strong>{item.title}</strong></div><p>{item.notes}</p><small>{item.status === 'developing' ? '正在强化' : item.status === 'resolved' ? '已回收' : '等待回收'}</small></article>)}</section></aside>
     </div>

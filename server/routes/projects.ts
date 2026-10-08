@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { db, sql } from '../db.ts'
 import { searchMemory } from '../memory.ts'
 import { generate, generateStream, getModelStatus, normalizeBaseUrl, probeModel, setRuntimeConfig } from '../ai.ts'
-import { runReview } from '../review.ts'
+import { runReview, selfAuditReviews } from '../review.ts'
 import { buildDocx, buildEpub, buildMarkdown, buildTxt, manuscriptContentTypes, manuscriptExtension, type ManuscriptFormat } from '../exporter.ts'
 import { buildProjectExport, assembleManuscriptVolumes } from '../project-export.ts'
 import { backupPath, listBackups } from '../backup.ts'
@@ -105,6 +105,25 @@ projectsRouter.get('/api/projects/:projectId/reviews', (req, res) => {
   res.json(sql.all<Record<string, unknown>>('SELECT * FROM reviews WHERE project_id = ? ORDER BY CASE severity WHEN \'high\' THEN 1 WHEN \'medium\' THEN 2 ELSE 3 END, created_at DESC', req.params.projectId).map(decodeRow))
 })
 projectsRouter.post('/api/projects/:projectId/reviews/run', (req, res) => { requireProject(req.params.projectId); res.json({ issues: runReview(req.params.projectId) }) })
+// AI 自审：对未预判的 open 审查项做一次预判（可自动/建议忽略/需人工），写回 ai_suggestion
+projectsRouter.post('/api/projects/:projectId/reviews/self-audit', asyncRoute(async (req, res) => {
+  const projectId = String(req.params.projectId)
+  requireProject(projectId)
+  res.json(await selfAuditReviews(projectId))
+}))
+// 按建议批量处理：auto_resolve → resolved，suggest_ignore → ignored；needs_human 保持 open
+projectsRouter.post('/api/projects/:projectId/reviews/apply-suggestions', asyncRoute(async (req, res) => {
+  const rows = sql.all<{ id: string; ai_suggestion: string }>("SELECT id, ai_suggestion FROM reviews WHERE project_id = ? AND status = 'open' AND ai_suggestion != ''", req.params.projectId)
+  let applied = 0
+  for (const row of rows) {
+    try {
+      const suggestion = JSON.parse(row.ai_suggestion) as { verdict: string }
+      if (suggestion.verdict === 'auto_resolve') { sql.run("UPDATE reviews SET status = 'resolved' WHERE id = ?", row.id); applied += 1 }
+      else if (suggestion.verdict === 'suggest_ignore') { sql.run("UPDATE reviews SET status = 'ignored' WHERE id = ?", row.id); applied += 1 }
+    } catch { /* malformed suggestion stays for manual review */ }
+  }
+  res.json({ applied })
+}))
 projectsRouter.patch('/api/reviews/:reviewId', (req, res) => {
   const status = z.object({ status: z.enum(['open', 'resolved', 'ignored']) }).parse(req.body).status
   sql.run('UPDATE reviews SET status=? WHERE id=?', status, req.params.reviewId)

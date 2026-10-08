@@ -183,6 +183,7 @@ export interface ReviewIssue {
   evidence: string[]
   status: string
   created_at: string
+  ai_suggestion?: { verdict: 'auto_resolve' | 'suggest_ignore' | 'needs_human'; rationale: string; action: string } | null
 }
 
 export interface SearchHit {
