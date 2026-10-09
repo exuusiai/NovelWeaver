@@ -193,7 +193,7 @@ function recordGeneration(request: ModelRequest, assembledText: string, output: 
 }
 
 export async function generate(request: ModelRequest) {
-  const assembled = await assembleContext(request.projectId, request.prompt, request.chapterId)
+  const assembled = await assembleContext(request.projectId, request.prompt, request.chapterId, 10000, { content: request.chapterContent, outline: request.chapterOutline, scope: request.scope })
   let output: string
   let model = 'local-rules-v1'
   let usage: ModelUsage | undefined
@@ -259,7 +259,7 @@ export type GenerateStreamEvent =
   | { type: 'error'; message: string }
 
 export async function* generateStream(request: ModelRequest): AsyncGenerator<GenerateStreamEvent> {
-  const assembled = await assembleContext(request.projectId, request.prompt, request.chapterId)
+  const assembled = await assembleContext(request.projectId, request.prompt, request.chapterId, 10000, { content: request.chapterContent, outline: request.chapterOutline, scope: request.scope })
   let output = ''
   let model = 'local-rules-v1'
   if (runtimeConfig.apiKey) {

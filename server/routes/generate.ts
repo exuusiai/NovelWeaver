@@ -4,14 +4,14 @@ import { assembleContext } from '../memory.ts'
 import { generate, generateStream } from '../ai.ts'
 import { asyncRoute, requireProject } from './helpers.ts'
 
-const generateRequestSchema = z.object({ projectId: z.string(), task: z.enum(['chat', 'outline', 'chapter_outline', 'prose', 'setting', 'plot', 'analysis']), prompt: z.string().default(''), chapterId: z.string().optional() })
+const generateRequestSchema = z.object({ projectId: z.string(), task: z.enum(['chat', 'outline', 'chapter_outline', 'prose', 'setting', 'plot', 'analysis']), prompt: z.string().default(''), chapterId: z.string().optional(), chapterContent: z.string().optional(), chapterOutline: z.string().optional(), scope: z.enum(['upto', 'full']).optional() })
 
 export const generateRouter = Router()
 
 generateRouter.post('/api/ai/context', asyncRoute(async (req, res) => {
-  const body = z.object({ projectId: z.string(), prompt: z.string().default(''), chapterId: z.string().optional(), tokenBudget: z.number().int().min(1000).max(50000).default(10000) }).parse(req.body)
+  const body = z.object({ projectId: z.string(), prompt: z.string().default(''), chapterId: z.string().optional(), tokenBudget: z.number().int().min(1000).max(50000).default(10000), chapterContent: z.string().optional(), chapterOutline: z.string().optional(), scope: z.enum(['upto', 'full']).optional() }).parse(req.body)
   requireProject(body.projectId)
-  const assembled = await assembleContext(body.projectId, body.prompt, body.chapterId, body.tokenBudget)
+  const assembled = await assembleContext(body.projectId, body.prompt, body.chapterId, body.tokenBudget, { content: body.chapterContent, outline: body.chapterOutline, scope: body.scope })
   res.json({ report: assembled.report, citations: assembled.hits })
 }))
 

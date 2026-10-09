@@ -1012,3 +1012,7 @@ h1, h2, h3, p { margin: 0; }
 
 .quality-grid article.metric-warn { border-color: #dfbbb6; background: #fff9f8; }
 .quality-grid article.metric-warn svg { color: var(--red); }
+
+/* 写作页：本章分析基于旧稿提示 */
+.stale-chip { border: 1px solid #dfbbb6; background: #fff9f8; color: #8a4a40; font-size: 9px; font-weight: 700; border-radius: 999px; padding: 3px 9px; cursor: pointer; white-space: nowrap; }
+.stale-chip:hover { background: #fdeeea; }

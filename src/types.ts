@@ -33,6 +33,8 @@ export interface Chapter {
   pov: string
   target_words: number
   updated_at: string
+  content_hash?: string
+  analyzed_hash?: string
   bookmarked: number
   importance: 'normal' | 'important' | 'critical'
   mark_note: string
@@ -225,6 +227,9 @@ export interface GenerationResult {
   model: string
   citations: SearchHit[]
   contextReport?: ContextReport
+  /** 生成时绑定的章节与任务：防止跨章节/跨任务误采纳 */
+  chapterId?: string
+  task?: string
 }
 
 export interface AnalysisJob {

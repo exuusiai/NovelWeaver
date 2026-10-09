@@ -41,13 +41,13 @@ export function ReviewCenter() {
         if (!result.audited || !result.remaining) break
       }
       await load()
-      setAuditNotice('AI 预审完成：每条问题已附建议与理由，可一键采纳或逐条裁决。')
+      setAuditNotice('AI 预审完成：每条问题已附建议与理由。注意「可自动解决」指可批量关闭提醒——真正的修复（补时间、补视角等）需在对应模块执行后重跑审查。')
     } catch (caught) { setAuditNotice(`AI 预审失败：${(caught as Error).message}`) } finally { setAuditing(false) }
   }
   const applySuggestions = async () => {
     const result = await post<{ applied: number }>(`/api/projects/${projectId}/reviews/apply-suggestions`, {})
     await Promise.all([load(), reloadProjects()])
-    setAuditNotice(`已按 AI 建议处理 ${result.applied} 条（可自动解决 → 已处理，建议忽略 → 有意为之）；需人工的问题保持待处理。`)
+    setAuditNotice(`已按 AI 建议关闭 ${result.applied} 条提醒。注意：关闭 ≠ 修复——机械缺口需在对应模块批量处理后重跑审查才会消失；需人工的问题保持待处理。`)
   }
   const update = async (id: string, status: 'resolved' | 'ignored') => { await patch(`/api/reviews/${id}`, { status }); load(); reloadProjects() }
   // 事实冲突裁决：运行时按 canon_status 判定每条事实的角色，不依赖 evidence 写入顺序。

@@ -112,6 +112,14 @@ export function runReview(projectId: string) {
   openForeshadowing.forEach((item) => issues.push({ category: 'foreshadowing', severity: item.status === 'open' ? 'medium' : 'low', title: `伏笔待回收：${item.title}`, description: '该伏笔尚未标记回收。它可能是有意保留，请根据计划确认回收章节。', evidence: [String(item.id)] }))
   issues.push(...factConflicts(projectId))
 
+  // 指纹：同指纹的 ignored/resolved 项代表作者已做过决定——不重复提醒；
+  // 证据集合变化（新事件/新冲突）会产生新指纹，重新提醒。
+  const fingerprintOf = (issue: { category: string; groupKey?: string; evidence: string[]; title: string }) => {
+    if (issue.groupKey) return `${issue.category}|${issue.groupKey}`
+    const subject = (issue.title.match(/[《“"]([^《》”"]+)/)?.[1] || issue.title).replace(/\s+/g, '')
+    const evidenceKey = [...issue.evidence].sort().join(',')
+    return `${issue.category}|${subject}|${evidenceKey.slice(0, 120)}`
+  }
   // 聚合层：模式相同的机械问题（如全部事件缺时间）折叠成单条汇总，避免审查中心被
   // 数百条同质条目淹没；决策类问题（事实冲突等）永不折叠。
   const aggregated: typeof issues = []
@@ -131,8 +139,21 @@ export function runReview(projectId: string) {
       groupKey: key,
     })
   }
-  aggregated.forEach((issue) => sql.run('INSERT INTO reviews (id, project_id, category, severity, title, description, evidence, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', sql.id(), projectId,
-    issue.category, issue.severity, issue.title, issue.description, JSON.stringify(issue.evidence), 'open', sql.now()))
+  let skippedDecided = 0
+  const fingerprintSeen = new Set<string>()
+  for (const issue of aggregated) {
+    const fingerprint = fingerprintOf(issue)
+    if (fingerprintSeen.has(fingerprint)) continue
+    fingerprintSeen.add(fingerprint)
+    // 作者对同指纹问题裁决过（忽略/已处理）：尊重决定，不再重新提醒
+    const decided = sql.get("SELECT id FROM reviews WHERE project_id = ? AND fingerprint = ? AND status IN ('ignored','resolved') LIMIT 1", projectId, fingerprint)
+    if (decided) { skippedDecided += 1; continue }
+    sql.run('INSERT INTO reviews (id, project_id, category, severity, title, description, evidence, status, fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', sql.id(), projectId,
+      issue.category, issue.severity, issue.title, issue.description, JSON.stringify(issue.evidence), 'open', fingerprint, sql.now())
+  }
+  if (skippedDecided > 0) {
+    aggregated.push({ category: 'structure', severity: 'low', title: `${skippedDecided} 类问题已按你的既往决定跳过`, description: '这些问题的同指纹条目此前已被你处理（已处理/有意为之），本次审查未重复提醒。如需重新提醒，请删除对应历史条目。', evidence: [] })
+  }
   return aggregated
 }
 
@@ -150,10 +171,21 @@ const auditSchema = z.object({
 })
 
 export async function selfAuditReviews(projectId: string) {
-  const open = sql.all<{ id: string; category: string; severity: string; title: string; description: string }>(
-    "SELECT id, category, severity, title, description FROM reviews WHERE project_id = ? AND status = 'open' AND ai_suggestion = '' ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at LIMIT 24", projectId)
+  const open = sql.all<{ id: string; category: string; severity: string; title: string; description: string; evidence: string }>(
+    "SELECT id, category, severity, title, description, evidence FROM reviews WHERE project_id = ? AND status = 'open' AND ai_suggestion = '' ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at LIMIT 24", projectId)
   if (!open.length) return { audited: 0, remaining: 0 }
-  const digest = open.map((issue) => `- id=${issue.id} [${issue.category}/${issue.severity}] ${issue.title}\n  ${issue.description.replace(/\n/g, ' ').slice(0, 160)}`).join('\n')
+  // 预审上下文带上证据实况（章节题/事实值），而不是只看标题——结论才可信
+  const chapterTitles = new Map(sql.all<{ id: string; title: string }>('SELECT id, title FROM chapters WHERE project_id = ?', projectId).map((row) => [row.id, row.title]))
+  const factById = new Map(sql.all<{ id: string; subject: string; predicate: string; value: string; canon_status: string }>('SELECT id, subject, predicate, value, canon_status FROM story_facts WHERE project_id = ?', projectId).map((row) => [row.id, row]))
+  const digest = open.map((issue) => {
+    const evidenceNotes = issue.evidence ? (JSON.parse(issue.evidence) as string[]).slice(0, 4).map((id) => {
+      if (chapterTitles.has(id)) return `章节《${chapterTitles.get(id)}》`
+      const fact = factById.get(id)
+      if (fact) return `事实「${fact.subject}·${fact.predicate}｜${fact.value.slice(0, 30)}（${fact.canon_status}）」`
+      return id.slice(0, 8)
+    }).join('；') : ''
+    return `- id=${issue.id} [${issue.category}/${issue.severity}] ${issue.title}\n  ${issue.description.replace(/\n/g, ' ').slice(0, 160)}${evidenceNotes ? `\n  证据：${evidenceNotes}` : ''}`
+  }).join('\n')
   const system = `你是小说项目的连续性审查助手。对每个待处理审查项给出**预判**，帮助作者快速分流。判定标准：
 - auto_resolve：机械性/批量性缺口或已由系统聚合的条目，处理动作明确（如"批量补时间""确认整批候选"），解决风险低；
 - suggest_ignore：以现有信息看大概率是有意为之或误报（如作者刻意保留的伏笔、双胞胎"冲突"实为状态变化）；

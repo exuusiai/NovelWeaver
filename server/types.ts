@@ -25,6 +25,12 @@ export interface ModelRequest {
   projectId: string
   chapterId?: string
   context?: string
+  /** 编辑中的未保存正文：让生成基于作者眼前所见，而非数据库旧稿 */
+  chapterContent?: string
+  /** 当前章细纲（未保存或已保存均可） */
+  chapterOutline?: string
+  /** upto：只看本章及之前；full：全书视角 */
+  scope?: 'upto' | 'full'
 }
 
 export interface RuntimeModelConfig {

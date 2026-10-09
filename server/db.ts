@@ -284,6 +284,7 @@ for (const statement of [
   'ALTER TABLE generations ADD COLUMN used INTEGER NOT NULL DEFAULT -1',
   "ALTER TABLE memory_chunks ADD COLUMN embedding TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE reviews ADD COLUMN ai_suggestion TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE reviews ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE chapters ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE chapters ADD COLUMN analyzed_hash TEXT NOT NULL DEFAULT ''",
   'ALTER TABLE projects ADD COLUMN import_revision INTEGER NOT NULL DEFAULT 0',

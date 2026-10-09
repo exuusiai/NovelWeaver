@@ -293,26 +293,47 @@ function pickWithinBudget(items: ContextItem[], budget: number) {
   return { included, trimmed, used }
 }
 
-export async function assembleContext(projectId: string, prompt: string, chapterId?: string, tokenBudget = 10000): Promise<AssembledContext> {
-  const cacheKey = `${projectVersion(projectId)}:${chapterId || ''}:${tokenBudget}:${normalize(prompt)}`
+export interface ContextOptions {
+  /** 编辑中的未保存正文：优先于数据库正文进入上下文 */
+  content?: string
+  /** 当前章细纲：显式注入，保证"AI 真正读了我的细纲" */
+  outline?: string
+  /** upto：只看本章及之前的剧情（回头修改前章时的正确模式）；full：全书视角（规划模式） */
+  scope?: 'upto' | 'full'
+}
+
+export async function assembleContext(projectId: string, prompt: string, chapterId?: string, tokenBudget = 10000, options: ContextOptions = {}): Promise<AssembledContext> {
+  const scope = options.scope ?? (chapterId ? 'upto' : 'full')
+  const overrideKey = `${options.content?.length || 0}:${options.outline?.length || 0}:${scope}`
+  const cacheKey = `${projectVersion(projectId)}:${chapterId || ''}:${tokenBudget}:${normalize(prompt)}:${overrideKey}`
   const cached = contextCache.get(cacheKey)
   if (cached) return cached
   const project = sql.get<Record<string, unknown>>('SELECT * FROM projects WHERE id = ?', projectId)
-  const chapter = chapterId ? sql.get<Record<string, unknown>>('SELECT title, summary, content, pov, position FROM chapters WHERE id = ?', chapterId) : undefined
+  const chapterRow = chapterId ? sql.get<Record<string, unknown>>('SELECT title, summary, content, pov, position FROM chapters WHERE id = ?', chapterId) : undefined
+  const chapter = chapterRow ? { ...chapterRow, content: options.content ?? chapterRow.content } as Record<string, unknown> : undefined
+  // 细纲：显式传入优先，否则读已保存的章节细纲——"AI 真正读了我的细纲"
+  const outlineText = options.outline
+    || (chapterId ? sql.get<{ content: string }>('SELECT content FROM chapter_outlines WHERE chapter_id = ?', chapterId)?.content || '' : '')
   const volume = chapterId ? sql.get<Record<string, unknown>>(`SELECT v.title, v.summary FROM volumes v
     JOIN chapter_volume_bindings b ON b.volume_id=v.id WHERE b.chapter_id=?`, chapterId) : undefined
   const hits = await searchMemory(projectId, prompt, 16, chapterId)
   // 事实的时序以"来源章节的当前 position"动态计算（c.position），章节重排后
   // 事实的新旧自动跟随，不再依赖分析时固化的 introduced_position 快照。
+  const currentPosition = typeof chapter?.position === 'number' ? Number(chapter.position) : undefined
+  const uptoFilter = scope === 'upto' && currentPosition !== undefined
   const allFacts = sql.all<Record<string, unknown>>(`SELECT f.*, c.title chapter_title, c.position live_position FROM story_facts f
     LEFT JOIN chapters c ON c.id=f.source_chapter_id WHERE f.project_id=? AND f.canon_status IN ('canon','candidate')
-    ORDER BY CASE f.canon_status WHEN 'canon' THEN 0 ELSE 1 END, f.importance DESC LIMIT 40`, projectId)
+    ${uptoFilter ? 'AND (c.position IS NULL OR c.position <= ?)' : ''}
+    ORDER BY CASE f.canon_status WHEN 'canon' THEN 0 ELSE 1 END, f.importance DESC LIMIT 120`,
+    uptoFilter ? [projectId, currentPosition] : [projectId])
   const allEntities = sql.all<Record<string, unknown>>(`SELECT type, name, summary, data, canon_status, confidence FROM entities
-    WHERE project_id=? AND canon_status IN ('canon','candidate') ORDER BY confidence DESC LIMIT 80`, projectId)
+    WHERE project_id=? AND canon_status IN ('canon','candidate') ORDER BY confidence DESC LIMIT 200`, projectId)
   const plotlines = sql.all<Record<string, unknown>>('SELECT name, type, summary, status FROM plotlines WHERE project_id=? AND status IN (?, ?)', projectId, 'active', 'candidate')
   const allEvents = sql.all<Record<string, unknown>>(`SELECT e.title, e.summary, e.story_time, e.status, c.position
-    FROM events e LEFT JOIN chapters c ON c.id=e.chapter_id WHERE e.project_id=? ORDER BY e.narrative_order DESC LIMIT 60`, projectId)
-  const referenceText = normalize(`${prompt} ${chapter?.summary || ''} ${hits.slice(0, 8).map((hit) => `${hit.summary} ${hit.content.slice(0, 350)}`).join(' ')}`)
+    FROM events e LEFT JOIN chapters c ON c.id=e.chapter_id WHERE e.project_id=?
+    ${uptoFilter ? 'AND (c.position IS NULL OR c.position <= ?)' : ''}
+    ORDER BY e.narrative_order DESC LIMIT 150`, uptoFilter ? [projectId, currentPosition] : [projectId])
+  const referenceText = normalize(`${prompt} ${outlineText} ${chapter?.summary || ''} ${hits.slice(0, 8).map((hit) => `${hit.summary} ${hit.content.slice(0, 350)}`).join(' ')}`)
   const entities = allEntities.map((row, index) => {
     let meta: Record<string, unknown> = {}; try { meta = JSON.parse(String(row.data)) } catch { /* ignore */ }
     const aliases = Array.isArray(meta.aliases) ? meta.aliases.map(String) : []
@@ -334,7 +355,6 @@ export async function assembleContext(projectId: string, prompt: string, chapter
       WHERE (r.from_entity_id IN (${placeholders}) OR r.to_entity_id IN (${placeholders})) AND e.project_id = ? AND e.id NOT IN (${placeholders})
       ORDER BY r.strength DESC LIMIT 6`, [...selectedIds, ...selectedIds, ...selectedIds, projectId, ...selectedIds])
   }
-  const currentPosition = typeof chapter?.position === 'number' ? Number(chapter.position) : undefined
   const states = deriveEntityStates(projectId, currentPosition).filter((state) => referenceText.includes(normalize(state.name)) || normalize(state.name) === normalize(String(chapter?.pov || '')))
     .slice(0, 8)
   const events = allEvents.map((row) => {
@@ -353,6 +373,7 @@ export async function assembleContext(projectId: string, prompt: string, chapter
     make('project', '项目基线', `【项目】${project?.name ?? ''}\n题材：${project?.genre ?? ''}\n核心命题：${project?.premise ?? ''}`, 100),
     ...(() => { const macro = buildMacroMemory(projectId); return macro ? [make('macro', '全书概览', macro, 90)] : [] })(),
     ...(chapter ? [make('chapter', `当前章节：${chapter.title}`, `【当前章节】${chapter.title}\n视角：${chapter.pov}\n摘要：${chapter.summary}\n正文末尾：${String(chapter.content).slice(-1800)}`, 98)] : []),
+    ...(outlineText ? [make('outline', '本章细纲', `【本章细纲】${outlineText}`, 96)] : []),
     ...states.map((state) => make('state', `人物状态：${state.name}`,
       `【人物状态】${state.name}：最近事件「${state.lastEvent}」${state.lastTime ? `（${state.lastTime}）` : ''}${state.lastLocation ? `@${state.lastLocation}` : ''}；累计参与 ${state.eventCount} 个事件。此后未再出场，不要让其知晓之后发生的事。`, 92)),
     ...(volume ? [make('volume', `所属卷：${volume.title}`, `【所属卷】${volume.title}\n卷摘要：${volume.summary || '尚未填写'}`, 88)] : []),

@@ -79,11 +79,20 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
     if (jobId) updateAnalysisJob(jobId, { status: 'canceled', stage: 'canceled', progress: 100, message: `稿件已替换（r${jobRevision} → r${currentRevision}），旧分析结果已丢弃` })
     return result
   }
-  if (jobId) updateAnalysisJob(jobId, { stage: 'persisting', progress: 82, message: '正在写入候选设定、剧情线与事实摘要' })
+  // 章级校验：分析期间正文又被修改的章节，其派生结果不入库（防止旧稿污染）。
+  // 实体是跨章合并的全局结果无法按章归属，因此这类修改通过 run 降级 partial 暴露。
+  const changedChapterIds = chapters
+    .filter((chapter) => hashAtStart.get(chapter.id) !== contentHash(sql.get<{ content: string }>('SELECT content FROM chapters WHERE id=?', chapter.id)?.content || ''))
+    .map((chapter) => chapter.id)
+  const changedTitleSet = new Set(chapters.filter((chapter) => changedChapterIds.includes(chapter.id)).map((chapter) => chapter.title))
+  if (jobId) updateAnalysisJob(jobId, { stage: 'persisting', progress: 82, message: changedChapterIds.length
+    ? `正在写入候选（${changedChapterIds.length} 个章节分析期间又被修改，其事件已跳过）`
+    : '正在写入候选设定、剧情线与事实摘要' })
   const candidateIds = replaceCandidates ? sql.all<{ id: string }>(`SELECT id FROM entities WHERE project_id = ? AND canon_status = 'candidate'
     AND (json_extract(data, '$.source') = 'model-analysis' OR summary LIKE '从导入文稿中出现%')`, projectId) : []
   const entityIdByName = new Map<string, string>()
   const normalized = (value: string) => value.trim().toLowerCase()
+  const degraded = result.failures.length + changedChapterIds.length > 0
   const transaction = db.transaction(() => {
     candidateIds.forEach(({ id }) => {
       const memoryIds = sql.all<{ id: string }>('SELECT id FROM memory_chunks WHERE source_type = ? AND source_id = ?', 'entity', id)
@@ -123,6 +132,7 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
     const eventIds = new Map<string, string>()
     for (const event of result.events) {
       const chapter = chapters.find((item) => item.title === event.chapterTitle || event.chapterTitle.startsWith(item.title) || item.title.startsWith(event.chapterTitle))
+      if (chapter && changedTitleSet.has(chapter.title)) continue
       const id = sql.id(); eventIds.set(event.title, id)
       const order = (sql.get<{ max: number }>('SELECT COALESCE(MAX(narrative_order), 0) max FROM events WHERE project_id = ?', projectId)?.max ?? 0) + 1
       sql.run(`INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, projectId, event.title, event.summary, event.storyTime, order, 'candidate', null, chapter?.id ?? null, JSON.stringify(event.participants), event.location, event.cause, event.consequence, JSON.stringify({ source: 'model-analysis' }), stamp, stamp)
@@ -140,16 +150,18 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
       const exists = sql.get('SELECT id FROM relations WHERE project_id=? AND from_entity_id=? AND to_entity_id=? AND type=?', projectId, from, to, relation.type)
       if (!exists) sql.run('INSERT INTO relations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', sql.id(), projectId, from, to, relation.type, relation.label, relation.sentiment, Math.round(relation.strength), '', '', stamp)
     }
+    const failedChapterIds = new Set(result.failures.flatMap((failure) => failure.chapterIds))
     for (const chapter of chapters) {
+      if (failedChapterIds.has(chapter.id)) continue // 失败批次的结果不存在，不得标记完成
       const snapshot = hashAtStart.get(chapter.id)
       const live = contentHash(sql.get<{ content: string }>('SELECT content FROM chapters WHERE id=?', chapter.id)?.content || '')
       if (snapshot && live === snapshot) sql.run('UPDATE chapters SET analyzed_hash=? WHERE id=?', snapshot, chapter.id)
     }
-    sql.run('INSERT INTO analysis_runs VALUES (?, ?, ?, ?, ?, ?)', sql.id(), projectId, result.failures.length ? 'partial' : 'completed', getModelStatus().model, JSON.stringify({ entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, batches: result.batches, failures: result.failures }), stamp)
+    sql.run('INSERT INTO analysis_runs VALUES (?, ?, ?, ?, ?, ?)', sql.id(), projectId, degraded ? 'partial' : 'completed', getModelStatus().model, JSON.stringify({ entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, batches: result.batches, failures: result.failures }), stamp)
     sql.run('UPDATE projects SET updated_at=? WHERE id=?', stamp, projectId)
   })
   transaction()
-  if (jobId) updateAnalysisJob(jobId, { status: result.failures.length ? 'partial' : 'completed', stage: 'completed', progress: 100, message: result.failures.length ? `分析完成，${result.failures.length} 个批次需要重试` : '分析完成', result: { entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, batches: result.batches, failures: result.failures } })
+  if (jobId) updateAnalysisJob(jobId, { status: result.failures.length ? 'partial' : 'completed', stage: 'completed', progress: 100, message: degraded ? `分析完成，但 ${changedChapterIds.length} 个章节在分析期间被修改，已跳过写入；${result.failures.length} 个批次需要重试` : '分析完成', result: { entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, batches: result.batches, failures: result.failures, changedChapterIds } })
   return result
 }
 
@@ -182,6 +194,17 @@ async function runSecondPassJob(jobId: string, projectId: string) {
     sql.run('INSERT INTO analysis_quality VALUES (?, ?, ?, ?, ?, ?, ?)', sql.id(), projectId, jobId, 'second-pass', JSON.stringify(metrics), JSON.stringify(disagreements), sql.now())
     updateAnalysisJob(jobId, { status: second.failures.length ? 'partial' : 'completed', stage: 'completed', progress: 100, message: `复核完成，发现 ${disagreements.length} 项分歧`, result: { metrics, disagreements, failures: second.failures } })
   } catch (error) { updateAnalysisJob(jobId, { status: 'failed', stage: 'failed', progress: 100, message: '独立复核失败', error: (error as Error).message }) }
+}
+
+// 统一的任务创建入口：导入触发、手动分析、失败重试、二次复核共用，
+// 避免 INSERT 列清单在各处漂移（曾因新增 import_revision 出现占位符数量错位）。
+export function createAnalysisJob(projectId: string, options: { status?: string; message?: string; error?: string; replaceCandidates?: boolean; stage?: string } = {}) {
+  const revision = sql.get<{ r: number }>('SELECT import_revision r FROM projects WHERE id=?', projectId)?.r ?? 0
+  const jobId = sql.id(); const stamp = sql.now()
+  sql.run(`INSERT INTO analysis_jobs (id, project_id, status, stage, progress, message, error, replace_candidates, result, created_at, updated_at, import_revision)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, jobId, projectId, options.status ?? 'queued', options.stage ?? 'queued', 0,
+    options.message ?? '等待开始', options.error ?? '', options.replaceCandidates ? 1 : 0, '{}', stamp, stamp, revision)
+  return jobId
 }
 
 // Restart recovery: jobs interrupted by a process restart become resumable.
