@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bookmark, BookmarkCheck, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, Eye, FilePlus2, Filter, FolderPlus, History, ListTree, Loader2, PanelRightClose, Pencil, Pin, PinOff, RotateCcw, Save, ShieldAlert, Sparkles, Target, Trash2, WandSparkles } from 'lucide-react'
+import { Bookmark, BookmarkCheck, BookOpen, Check, ChevronDown, Copy, ChevronLeft, ChevronRight, Eye, FilePlus2, Filter, FolderPlus, History, ListTree, Loader2, PanelRightClose, Pencil, Pin, PinOff, RotateCcw, Save, ShieldAlert, Sparkles, Target, Trash2, WandSparkles } from 'lucide-react'
 import { api, patch, post, remove } from '../api'
 import { useNavigate } from 'react-router-dom'
 import { useProject } from '../project-context'
@@ -22,7 +22,7 @@ export function WritingStudio() {
   const [draft, setDraft] = useState<Chapter | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [autosave, setAutosave] = useState<'saved' | 'pending' | 'saving' | 'error'>('saved')
+  const [autosave, setAutosave] = useState<'saved' | 'pending' | 'saving' | 'error' | 'copied'>('saved')
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem('novelweaver.agent.open') !== '0' && window.innerWidth > 640)
   const [panelPinned, setPanelPinned] = useState(() => localStorage.getItem('novelweaver.agent.pinned') !== '0' && window.innerWidth > 860)
   const [prompt, setPrompt] = useState('根据当前细纲，生成下一场景；保持视角和既有设定，不新增未经确认的能力。')
@@ -51,6 +51,7 @@ export function WritingStudio() {
 
   const draftRef = useRef<Chapter | null>(null)
   const savedSnapshotRef = useRef('')
+  const saveRefRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false))
   const errorSnapshotRef = useRef('')
   const savingRef = useRef(false)
 
@@ -71,6 +72,18 @@ export function WritingStudio() {
     setAutosave('saved')
     setDraft(row)
   }
+  // 本地草稿镜像：保存成功前，正文持续写入 localStorage——保存失败、跨页、
+  // 甚至浏览器崩溃，都能从这里恢复。保存成功后镜像即清除。
+  const mirrorKey = (chapterId: string) => `novelweaver.draft.${chapterId}`
+  const writeMirror = (chapter: Chapter) => {
+    try { localStorage.setItem(mirrorKey(chapter.id), JSON.stringify({ title: chapter.title, content: chapter.content, summary: chapter.summary, savedAt: new Date().toISOString() })) } catch { /* 存储满时静默 */ }
+  }
+  const readMirror = (chapterId: string) => {
+    try { return JSON.parse(localStorage.getItem(mirrorKey(chapterId)) || 'null') as { title?: string; content?: string; summary?: string; savedAt?: string } | null } catch { return null }
+  }
+  const clearMirror = (chapterId: string) => { try { localStorage.removeItem(mirrorKey(chapterId)) } catch { /* ignore */ } }
+  const [localDraftNotice, setLocalDraftNotice] = useState<{ savedAt?: string; restore: () => void } | null>(null)
+
   const discardDraft = () => { draftRef.current = null; savedSnapshotRef.current = ''; errorSnapshotRef.current = ''; setDraft(null) }
 
   const load = async (preferredId = selectedId) => {
@@ -92,6 +105,14 @@ export function WritingStudio() {
       applyDraft(row)
       setOutlineEditing(false)
       sessionStorage.setItem('novelweaver.chapter', row.id)
+      // 保存失败/未保存时留下的本地草稿镜像：提示作者恢复
+      const mirror = readMirror(row.id)
+      if (mirror && mirror.content && mirror.content !== row.content) {
+        setLocalDraftNotice({ savedAt: mirror.savedAt, restore: () => {
+          setDraft((current) => current && current.id === row.id ? { ...current, title: mirror.title || current.title, content: mirror.content || current.content, summary: mirror.summary || current.summary } : current)
+          setLocalDraftNotice(null)
+        } })
+      } else setLocalDraftNotice(null)
     }
   }, [selectedId])
   useEffect(() => { localStorage.setItem('novelweaver.agent.open', panelOpen ? '1' : '0') }, [panelOpen])
@@ -127,6 +148,7 @@ export function WritingStudio() {
       const next = await patch<Chapter>(`/api/chapters/${current.id}`, payload)
       // 请求期间可能已切换/修改章节：只有同一章节且内容仍等于已保存快照时才合并
       if (draftRef.current?.id !== current.id) { savedSnapshotRef.current = previousSnapshot; return true }
+      clearMirror(current.id)
       setChapters((rows) => rows.map((row) => row.id === next.id ? { ...row, content: next.content } : row))
       setDraft((row) => row && row.id === next.id && snapshotOf(row) === snapshot ? { ...row, ...next } : row)
       errorSnapshotRef.current = ''
@@ -142,11 +164,27 @@ export function WritingStudio() {
       savingRef.current = false; setSaving(false)
     }
   }
+  useEffect(() => { saveRefRef.current = save })
+
+  // 站内跨页（设定/剧情/分析…）卸载写作页时：有未保存内容立即落盘。
+  // 异步保存不依赖组件存活（patch 已发出即会完成），镜像也已在编辑时写入。
+  useEffect(() => () => {
+    if (draftRef.current && snapshotOf(draftRef.current) !== savedSnapshotRef.current) void saveRefRef.current()
+  }, [])
+
+  // 站内跨页（设定/剧情/分析…）卸载写作页时：有未保存内容立即落盘。
+  // 异步保存不依赖组件存活（patch 已发出即会完成），镜像也已在编辑时写入。
+  const mountedRef = useRef(true)
+  useEffect(() => () => {
+    mountedRef.current = false
+    if (draftRef.current && snapshotOf(draftRef.current) !== savedSnapshotRef.current) void saveRefRef.current()
+  }, [])
 
   useEffect(() => {
     if (!draft) return
     const snapshot = snapshotOf(draft)
-    if (snapshot === savedSnapshotRef.current) { setAutosave('saved'); return }
+    if (snapshot === savedSnapshotRef.current) { setAutosave('saved'); clearMirror(draft.id); return }
+    writeMirror(draft)
     if (snapshot === errorSnapshotRef.current) { setAutosave('error'); return }
     setAutosave('pending')
     const timer = window.setTimeout(() => { void save() }, 2500)
@@ -351,11 +389,11 @@ export function WritingStudio() {
     </aside>
     <section className="editor-pane">
       {draft && <>
-        <header className="editor-toolbar"><div className="crumb">正文 <ChevronRight size={14} /> <span>{draft.title}</span></div><div className="chapter-nav-mobile"><IconButton label="上一章" disabled={!prevChapter} onClick={() => prevChapter && void selectChapter(prevChapter.id)}><ChevronLeft size={16} /></IconButton><select value={draft.id} onChange={(event) => void selectChapter(event.target.value)} aria-label="跳转章节">{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{String(chapter.position + 1).padStart(2, '0')} {chapter.title}</option>)}</select><IconButton label="下一章" disabled={!nextChapter} onClick={() => nextChapter && void selectChapter(nextChapter.id)}><ChevronRight size={16} /></IconButton></div><div className="editor-actions"><Badge tone={draft.status === 'revised' ? 'teal' : 'neutral'}>{draft.status === 'revised' ? '已修订' : '草稿'}</Badge>{draft.content_hash && draft.analyzed_hash && draft.content_hash !== draft.analyzed_hash && <button className="stale-chip" onClick={() => navigate('/analysis')} title="本章正文已修改，人物/事件/事实仍基于旧稿；到分析中心重新分析后解除">分析基于旧稿</button>}<span className="save-state">{saved && <><Check size={14} /> 已保存</>}</span><IconButton label="历史版本" onClick={openHistory}><History size={17} /></IconButton><IconButton label={draft.bookmarked ? '取消书签' : '添加书签'} className={draft.bookmarked ? 'active' : ''} onClick={() => updateMark({ bookmarked: !draft.bookmarked })}>{draft.bookmarked ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}</IconButton><Button variant="secondary" onClick={save} disabled={saving}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />} 保存</Button><IconButton label="删除当前章节" className="danger-icon" onClick={() => setDeleteOpen(true)}><Trash2 size={17} /></IconButton></div></header>
-        <div className="editor-meta"><Input className="chapter-title-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /><div className="chapter-facts"><label><span>所属卷</span><select className="input" value={draft.volume_id || ''} onChange={(event) => moveChapter(event.target.value)}>{volumes.map((volume) => <option key={volume.id} value={volume.id}>{volume.title}</option>)}</select></label><label><span>视角</span><Input value={draft.pov} onChange={(event) => setDraft({ ...draft, pov: event.target.value })} placeholder="未指定" /></label><label><span>目标</span><div><Target size={14} /><Input type="number" value={draft.target_words} onChange={(event) => setDraft({ ...draft, target_words: Number(event.target.value) })} /></div></label><label><span>重要性</span><select className="input importance-select" value={draft.importance} onChange={(event) => updateMark({ importance: event.target.value as Chapter['importance'] })}><option value="normal">普通</option><option value="important">重要</option><option value="critical">关键</option></select></label><span>{wordCount.toLocaleString()} 字</span></div><div className="summary-row"><Textarea className="summary-input" value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} placeholder="用一两句话记录本章的信息增量和状态变化……" rows={2} /><Button variant="secondary" className="summary-ai" onClick={rewriteSummary} disabled={summarizing || !draft.content.trim()} title="用模型重写本章摘要">{summarizing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} AI 摘要</Button></div>{summaryNotice && <p className="summary-notice">{summaryNotice}</p>}</div>
-        {draft.detailed_outline && <section className={`chapter-outline ${outlineExpanded ? 'expanded' : ''}`}><header><button onClick={() => setOutlineExpanded((value) => !value)}>{outlineExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<ListTree size={15} /><strong>本章细纲</strong><Badge tone="teal">由全书大纲拆分</Badge></button>{outlineExpanded && <Button variant="ghost" onClick={() => setOutlineEditing((value) => !value)}><Pencil size={13} /> {outlineEditing ? '预览' : '编辑'}</Button>}</header>{outlineExpanded && <div>{outlineEditing ? <><Textarea rows={16} value={draft.detailed_outline} onChange={(event) => setDraft({ ...draft, detailed_outline: event.target.value })} /><Button onClick={saveDetailedOutline}><Save size={14} /> 保存细纲</Button></> : <MarkdownLike text={draft.detailed_outline} />}</div>}</section>}
+        <header className="editor-toolbar"><div className="crumb">正文 <ChevronRight size={14} /> <span>{draft.title}</span></div><div className="chapter-nav-mobile"><IconButton label="新建章节" onClick={addChapter}><FilePlus2 size={16} /></IconButton><IconButton label="上一章" disabled={!prevChapter} onClick={() => prevChapter && void selectChapter(prevChapter.id)}><ChevronLeft size={16} /></IconButton><select value={draft.id} onChange={(event) => void selectChapter(event.target.value)} aria-label="跳转章节">{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{String(chapter.position + 1).padStart(2, '0')} {chapter.title}</option>)}</select><IconButton label="下一章" disabled={!nextChapter} onClick={() => nextChapter && void selectChapter(nextChapter.id)}><ChevronRight size={16} /></IconButton></div><div className="editor-actions"><Badge tone={draft.status === 'revised' ? 'teal' : 'neutral'}>{draft.status === 'revised' ? '已修订' : '草稿'}</Badge>{draft.content_hash && draft.analyzed_hash && draft.content_hash !== draft.analyzed_hash && <button className="stale-chip" onClick={() => navigate('/analysis')} title="本章正文已修改，人物/事件/事实仍基于旧稿；到分析中心重新分析后解除">分析基于旧稿</button>}<span className="save-state">{saved && <><Check size={14} /> 已保存</>}</span><IconButton label="历史版本" onClick={openHistory}><History size={17} /></IconButton><IconButton label={draft.bookmarked ? '取消书签' : '添加书签'} className={draft.bookmarked ? 'active' : ''} onClick={() => updateMark({ bookmarked: !draft.bookmarked })}>{draft.bookmarked ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}</IconButton><Button variant="secondary" onClick={save} disabled={saving}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />} 保存</Button><IconButton label="删除当前章节" className="danger-icon" onClick={() => setDeleteOpen(true)}><Trash2 size={17} /></IconButton></div></header>
+        <div className="editor-meta">{localDraftNotice && <div className="local-draft-notice"><span>检测到 {localDraftNotice.savedAt ? new Date(localDraftNotice.savedAt).toLocaleString('zh-CN') : ''} 保存失败时留下的本地草稿（与服务器正文不同）。</span><Button variant="secondary" onClick={localDraftNotice.restore}>恢复本地草稿</Button><Button variant="ghost" onClick={() => { if (draft) { clearMirror(draft.id); } setLocalDraftNotice(null) }}>丢弃</Button></div>}<Input className="chapter-title-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /><div className="chapter-facts"><label><span>所属卷</span><select className="input" value={draft.volume_id || ''} onChange={(event) => moveChapter(event.target.value)}>{volumes.map((volume) => <option key={volume.id} value={volume.id}>{volume.title}</option>)}</select></label><label><span>视角</span><Input value={draft.pov} onChange={(event) => setDraft({ ...draft, pov: event.target.value })} placeholder="未指定" /></label><label><span>目标</span><div><Target size={14} /><Input type="number" value={draft.target_words} onChange={(event) => setDraft({ ...draft, target_words: Number(event.target.value) })} /></div></label><label><span>重要性</span><select className="input importance-select" value={draft.importance} onChange={(event) => updateMark({ importance: event.target.value as Chapter['importance'] })}><option value="normal">普通</option><option value="important">重要</option><option value="critical">关键</option></select></label><span>{wordCount.toLocaleString()} 字</span></div><div className="summary-row"><Textarea className="summary-input" value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} placeholder="用一两句话记录本章的信息增量和状态变化……" rows={2} /><Button variant="secondary" className="summary-ai" onClick={rewriteSummary} disabled={summarizing || !draft.content.trim()} title="用模型重写本章摘要">{summarizing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} AI 摘要</Button></div>{summaryNotice && <p className="summary-notice">{summaryNotice}</p>}</div>
+        {<section className={`chapter-outline ${outlineExpanded || !draft.detailed_outline ? 'expanded' : ''}`}><header><button onClick={() => setOutlineExpanded((value) => !value)}>{outlineExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<ListTree size={15} /><strong>本章细纲</strong>{draft.detailed_outline ? <Badge tone="teal">由全书大纲拆分</Badge> : <Badge tone="amber">还没有细纲</Badge>}</button>{outlineExpanded && <Button variant="ghost" onClick={() => setOutlineEditing((value) => !value)}><Pencil size={13} /> {outlineEditing ? '预览' : '编辑'}</Button>}{!draft.detailed_outline && !outlineEditing && <Button variant="ghost" onClick={() => setOutlineEditing(true)}><Pencil size={13} /> 手写细纲</Button>}</header>{outlineExpanded && <div>{(outlineEditing || !draft.detailed_outline) ? <><Textarea rows={16} value={draft.detailed_outline} onChange={(event) => setDraft({ ...draft, detailed_outline: event.target.value })} placeholder="先手写构思，或用右侧创作 Agent 生成——写好后点保存细纲。" /><Button onClick={saveDetailedOutline}><Save size={14} /> 保存细纲</Button></> : <MarkdownLike text={draft.detailed_outline} />}</div>}</section>}
         <Textarea className="manuscript-editor" value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="从一个正在发生的动作开始……" spellCheck={false} />
-        <footer className="editor-footer"><span>目标完成度 {Math.min(Math.round(wordCount / draft.target_words * 100), 100)}%</span><div className="mini-progress"><i style={{ width: `${Math.min(wordCount / draft.target_words * 100, 100)}%` }} /></div><span>{autosave === 'saving' || saving ? '自动保存中…' : autosave === 'pending' ? '有未保存更改' : autosave === 'error' ? '自动保存失败' : '已自动保存'}</span>{autosave === 'error' && <Button variant="secondary" onClick={() => void save()}><RotateCcw size={13} /> 立即重试保存</Button>}</footer>
+        <footer className="editor-footer"><span>目标完成度 {Math.min(Math.round(wordCount / draft.target_words * 100), 100)}%</span><div className="mini-progress"><i style={{ width: `${Math.min(wordCount / draft.target_words * 100, 100)}%` }} /></div><span>{autosave === 'saving' || saving ? '自动保存中…' : autosave === 'pending' ? '有未保存更改' : autosave === 'error' ? '自动保存失败' : autosave === 'copied' ? '正文已复制到剪贴板' : '已自动保存'}</span>{autosave === 'error' && <><Button variant="secondary" onClick={() => void save()}><RotateCcw size={13} /> 立即重试保存</Button><Button variant="ghost" onClick={() => { void navigator.clipboard?.writeText(draft.content); setAutosave('copied') }} title="把本章全文复制到剪贴板，防止丢失"><Copy size={13} /> 复制正文</Button></>}</footer>
       </>}
     </section>
     {panelOpen ? <aside className="ai-panel"><header><div><WandSparkles size={18} /><div><strong>创作 Agent</strong><span>{panelPinned ? '已固定在写作区' : '悬浮面板'}</span></div></div><span className="agent-panel-actions"><IconButton label={panelPinned ? '取消固定助手' : '固定助手'} onClick={() => setPanelPinned((value) => !value)}>{panelPinned ? <Pin size={17} /> : <PinOff size={17} />}</IconButton><IconButton label="收起助手" onClick={() => setPanelOpen(false)}><PanelRightClose size={18} /></IconButton></span></header>

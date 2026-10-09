@@ -88,10 +88,11 @@ chaptersRouter.patch('/api/chapters/:chapterId', (req, res) => {
   const positionChanged = body.position !== undefined && body.position !== current.position
   db.transaction(() => {
     if (body.detailedOutline !== undefined) {
-      // 细纲与正文走同一条自动保存链路：作者不需要知道"细纲要单独存"
-      const existing = sql.get<{ id: string }>('SELECT id FROM chapter_outlines WHERE chapter_id=?', req.params.chapterId)
-      if (existing) sql.run("UPDATE chapter_outlines SET content=?, status=CASE WHEN status='archived' THEN status ELSE 'active' END, updated_at=? WHERE id=?", body.detailedOutline, sql.now(), existing.id)
-      else sql.run('INSERT INTO chapter_outlines (id, project_id, chapter_id, title, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', sql.id(), current.project_id, req.params.chapterId, '本章细纲', body.detailedOutline, 'active', sql.now(), sql.now())
+      // 细纲与正文走同一条自动保存链路：作者不需要知道"细纲要单独存"。
+      // chapter_outlines 以 chapter_id 为主键（无 id 列），upsert 按 chapter_id 定位。
+      const existing = sql.get<{ chapter_id: string }>('SELECT chapter_id FROM chapter_outlines WHERE chapter_id=?', req.params.chapterId)
+      if (existing) sql.run("UPDATE chapter_outlines SET content=?, status=CASE WHEN status='archived' THEN status ELSE 'active' END, updated_at=? WHERE chapter_id=?", body.detailedOutline, sql.now(), req.params.chapterId)
+      else sql.run('INSERT INTO chapter_outlines (project_id, chapter_id, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', current.project_id, req.params.chapterId, body.detailedOutline, 'active', sql.now(), sql.now())
     }
     sql.run(`UPDATE chapters SET title=?, content=?, summary=?, pov=?, status=?, target_words=?, position=?, content_hash=?, updated_at=? WHERE id=?`,
       body.title ?? current.title, body.content ?? current.content, body.summary ?? current.summary, body.pov ?? current.pov,

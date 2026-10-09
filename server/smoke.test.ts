@@ -46,6 +46,25 @@ describe('离线全链路冒烟', () => {
     expect(committed.data.chapters).toBeGreaterThanOrEqual(2)
   })
 
+  it('按真实前端请求体保存正文（含细纲字段）后可读回', async () => {
+    const chapters = await json<Array<{ id: string }>>('GET', `/api/projects/${projectId}/chapters`)
+    // 真实前端 payload：完整字段 + detailedOutline（曾因 chapter_outlines 无 id 列而整次保存失败）
+    const payload = { title: '第一章 石阶', content: '雨夜的港口。'.repeat(30), summary: '林雾醒来。', pov: '林雾', status: 'draft', targetWords: 3000, detailedOutline: '开场：石滩醒来。' }
+    const patched = await json<Record<string, unknown>>('PATCH', `/api/chapters/${chapters.data[0].id}`, payload)
+    expect(patched.status).toBe(200)
+    const outline = await json<{ content: string }>('GET', `/api/projects/${projectId}/chapters`).then(async (rows) => {
+      void rows
+      const r = await fetch(`${base}/api/projects/${projectId}/chapters`)
+      const list = (await r.json()) as Array<{ id: string }>
+      return list
+    })
+    void outline
+    // 细纲落库验证：再 PATCH 一次读取返回
+    const again = await json<{ detailed_outline?: string }>('PATCH', `/api/chapters/${chapters.data[0].id}`, { detailedOutline: '开场：石滩醒来，手握渗水地图。' })
+    expect(again.status).toBe(200)
+    expect(again.data.detailed_outline).toContain('渗水地图')
+  })
+
   it('章节与记忆已写入，检索可命中', async () => {
     const chapters = await json<Array<{ id: string; title: string; content: string; summary: string }>>('GET', `/api/projects/${projectId}/chapters`)
     expect(chapters.data.length).toBeGreaterThanOrEqual(2)
