@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
-import { AlertTriangle, Check, CheckCircle2, CloudCog, Database, Download, Eye, EyeOff, KeyRound, Loader2, RefreshCw, Save, Server, ShieldCheck, Sparkles, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Check, CheckCircle2, CloudCog, Database, Download, Upload, Eye, EyeOff, KeyRound, Loader2, RefreshCw, Save, Server, ShieldCheck, Sparkles, Trash2 } from 'lucide-react'
 import { api, patch, post, remove } from '../api'
 import { useProject } from '../project-context'
 import type { Project } from '../types'
 import { Badge, Button, Field, Input, Modal, Textarea } from '../components/ui'
 
-interface ModelStatus { baseUrl: string; model: string; configured: boolean; mode: string; source?: string; persistence?: string; engine?: string; fallbackDescription?: string; verifiedAt?: string; lastProbeError?: string; lastProbedAt?: string; latencyMs?: number; networkLatencyMs?: number; probeType?: 'gateway' | 'minimal-generation'; embedding?: { model: string | null; enabled: boolean; total: number; embedded: number; coverage: number } }
+interface ModelStatus { baseUrl: string; model: string; configured: boolean; mode: string; source?: string; persistence?: string; engine?: string; fallbackDescription?: string; verifiedAt?: string; lastProbeError?: string; lastProbedAt?: string; latencyMs?: number; networkLatencyMs?: number; probeType?: 'gateway' | 'minimal-generation'; embedding?: { model: string | null; enabled: boolean; total: number; embedded: number; coverage: number; auto?: boolean; lastError?: string | null; lastSweepAt?: string | null } }
 type Notice = { tone: 'success' | 'error' | 'info'; message: string }
 
 const providers = {
@@ -33,6 +33,12 @@ export function SettingsPage() {
   const [catalog, setCatalog] = useState<string[]>([])
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [keyVisible, setKeyVisible] = useState(false)
+  const restoreRef = useRef<HTMLInputElement>(null)
+  const [restoring, setRestoring] = useState(false)
+  const [restoreNotice, setRestoreNotice] = useState('')
+  const [restoreOk, setRestoreOk] = useState(false)
+  const [embeddingAuto, setEmbeddingAuto] = useState(true)
+  const [sweeping, setSweeping] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -42,6 +48,7 @@ export function SettingsPage() {
     setProject(projectRow)
     setModel(modelRow)
     setProjectForm({ name: projectRow.name, genre: projectRow.genre, premise: projectRow.premise, wordGoal: projectRow.word_goal, status: projectRow.status === 'completed' ? 'completed' : 'active' })
+    setEmbeddingAuto(modelRow.embedding?.auto ?? true)
     setModelForm((form) => ({ ...form, baseUrl: modelRow.baseUrl, model: modelRow.model, embeddingModel: modelRow.embedding?.model || '' }))
     setProvider(detectProvider(modelRow.baseUrl, modelRow.model))
   }
@@ -105,6 +112,37 @@ export function SettingsPage() {
     } finally { setCatalogLoading(false) }
   }
 
+  const toggleEmbeddingAuto = async (enabled: boolean) => {
+    const status = await post<{ auto: boolean; lastError?: string | null }>(`/api/embeddings/auto`, { enabled })
+    setEmbeddingAuto(status.auto ?? enabled); setModel((current) => current ? { ...current, embedding: current.embedding ? { ...current.embedding, auto: status.auto } : current.embedding } : current)
+    showNotice({ tone: 'success', message: enabled ? '已恢复后台向量化。' : '已暂停后台向量化——新内容暂不发送到服务商。' })
+  }
+  const sweepNow = async () => {
+    setSweeping(true)
+    try {
+      const status = await post<{ coverage: number; lastError?: string | null; total: number; embedded: number }>('/api/embeddings/backfill-now', {})
+      setModel((current) => current ? { ...current, embedding: current.embedding ? { ...current.embedding, ...status } : current.embedding } : current)
+      showNotice({ tone: status.lastError ? 'error' : 'success', message: status.lastError ? `处理失败：${status.lastError}` : `向量化完成：${status.embedded}/${status.total} 块。` }, 8000)
+    } catch (caught) { showNotice({ tone: 'error', message: `处理失败：${(caught as Error).message}` }, 8000) } finally { setSweeping(false) }
+  }
+
+  const restoreBackup = async (file?: File) => {
+    if (!file) return
+    setRestoring(true); setRestoreNotice('')
+    try {
+      const text = await file.text()
+      const payload = JSON.parse(text) as Record<string, unknown>
+      const created = await post<{ id: string; name: string; chapters: number }>('/api/projects/restore', payload)
+      setRestoreOk(true); setRestoreNotice(`已恢复为项目「${created.name}」（${created.chapters} 章）。可在左侧项目切换器中打开。`)
+      await reloadProjects()
+    } catch (caught) {
+      setRestoreOk(false); setRestoreNotice(`恢复失败：${(caught as Error).message}。备份文件未受影响。`)
+    } finally {
+      if (restoreRef.current) restoreRef.current.value = ''
+      setRestoring(false)
+    }
+  }
+
   const clearKey = async () => {
     const status = await post<ModelStatus>('/api/model', { clearKey: true })
     setModel(status)
@@ -151,13 +189,14 @@ export function SettingsPage() {
         </Field>
         <Field label="API Base URL" hint="只填到服务商的 /v1；若误粘贴 /chat/completions，系统会自动移除。"><Input value={modelForm.baseUrl} onChange={(event) => { setProvider('custom'); setModelForm({ ...modelForm, baseUrl: event.target.value }) }} placeholder="https://example.com/v1" /></Field>
         <Field label="临时 API Key" hint={model?.configured ? '留空会保留当前密钥。临时密钥仅存在服务进程内，重启后失效。' : '仅存在当前服务进程内。需要重启后保留，请配置项目根目录的 .env。'}><div className="secret-input"><KeyRound size={15} /><Input type={keyVisible ? 'text' : 'password'} autoComplete="off" value={modelForm.apiKey} onChange={(event) => setModelForm({ ...modelForm, apiKey: event.target.value })} placeholder={model?.configured ? '已配置；留空保持不变' : '粘贴 API Key'} /><button type="button" className="key-toggle" onClick={() => setKeyVisible((visible) => !visible)} title={keyVisible ? '隐藏密钥' : '显示密钥'}>{keyVisible ? <EyeOff size={14} /> : <Eye size={14} />}</button></div></Field>
-        <Field label="Embedding 模型（可选）" hint={model?.embedding ? `已向量化 ${model.embedding.embedded}/${model.embedding.total} 块记忆（覆盖率 ${(model.embedding.coverage * 100).toFixed(0)}%）。检索按查询形态自动门控：含实体名走词法，否则走向量。` : '填写后启用向量语义检索；留空则全部使用词法检索。'}><Input value={modelForm.embeddingModel} onChange={(event) => setModelForm({ ...modelForm, embeddingModel: event.target.value })} placeholder="例如 GLM-Embedding-3" /></Field>
+        <Field label="Embedding 模型（可选）" hint={model?.embedding ? `已向量化 ${model.embedding.embedded}/${model.embedding.total} 块记忆（覆盖率 ${(model.embedding.coverage * 100).toFixed(0)}%）。检索按查询形态自动门控：含实体名走词法，否则走向量。${model.embedding.lastError ? `｜最近处理失败：${model.embedding.lastError}` : ''}` : '填写后启用向量语义检索；留空则全部使用词法检索。'}><Input value={modelForm.embeddingModel} onChange={(event) => setModelForm({ ...modelForm, embeddingModel: event.target.value })} placeholder="例如 GLM-Embedding-3" /></Field>
+        <div className="privacy-embed"><label className="completion-toggle"><input type="checkbox" checked={embeddingAuto} onChange={(event) => void toggleEmbeddingAuto(event.target.checked)} /><CheckCircle2 size={18} /><span><strong>后台自动向量化</strong><small>开启后，系统会把作品片段自动发送给你配置的服务商做向量化——不需要点「生成」也会发送，可能产生费用。关闭后新内容只做本地词法检索，可稍后手动处理。</small></span></label>{model?.embedding?.enabled && <Button variant="secondary" onClick={sweepNow} disabled={sweeping || !modelForm.embeddingModel.trim() && !model?.embedding?.model}><RefreshCw className={sweeping ? 'spin' : ''} size={14} /> {sweeping ? '处理中…' : '立即处理未向量化的内容'}</Button>}{model?.embedding?.lastError && <p className="form-error" style={{ marginTop: 6 }}>最近一次处理失败：{model.embedding.lastError}</p>}</div>
         <div className="settings-actions"><Button onClick={saveAndProbe} disabled={probing || !modelForm.baseUrl.trim() || !modelForm.model.trim()}><Sparkles size={15} /> {probing ? '正在实测…' : '保存并测试'}</Button>{model?.configured && <Button variant="ghost" onClick={clearKey}>清除临时密钥</Button>}</div>
       </div>
       <p className="config-note">连接测试优先使用轻量 <code>/models</code> 网关探测；服务商不支持时才发送限制为 2 tokens 的最小生成。实际创作仍通过 <code>/chat/completions</code>。</p>
     </section>
 
-    <div className="settings-split"><section className="surface settings-section compact"><header><div><ShieldCheck size={19} /><div><h2>数据与隐私</h2><p>本地 SQLite 数据库</p></div></div></header><ul><li><Check size={14} /> 仅在触发模型生成或分析时发送所需上下文</li><li><Check size={14} /> API Key 不写入数据库</li><li><Check size={14} /> 每次生成保留上下文快照</li><li><Check size={14} /> AI 候选不会自动写入正史</li></ul></section><section className="surface settings-section compact"><header><div><Download size={19} /><div><h2>备份与导出</h2><p>完整可迁移的项目数据</p></div></div></header><p>导出章节、设定、事件、关系、伏笔与项目元数据。文件不包含 API Key。</p><Button variant="secondary" onClick={exportProject}><Download size={15} /> 导出 JSON 备份</Button></section></div>
+    <div className="settings-split"><section className="surface settings-section compact"><header><div><ShieldCheck size={19} /><div><h2>数据与隐私</h2><p>本地 SQLite 数据库</p></div></div></header><ul><li><Check size={14} /> 点「生成」或「分析」时，会发送组装好的上下文（正文片段、设定卡、剧情摘要等）</li><li><Check size={14} /> 启用「Embedding 模型」后，后台会把作品片段发送给你配置的服务商做向量化；可在上方关闭或点「立即处理」</li><li><Check size={14} /> API Key 不写入数据库</li><li><Check size={14} /> 每次生成保留上下文快照</li><li><Check size={14} /> AI 候选不会自动写入正史</li></ul></section><section className="surface settings-section compact"><header><div><Download size={19} /><div><h2>备份与导出</h2><p>完整可迁移的项目数据</p></div></div></header><p>导出与恢复都包含章节、设定、事件、关系、事实、记忆（含向量）、审查与生成记录。文件不包含 API Key。恢复会创建为**新项目**，不覆盖现有数据。</p><Button variant="secondary" onClick={exportProject}><Download size={15} /> 导出 JSON 备份</Button><input ref={restoreRef} type="file" accept="application/json,.json" hidden onChange={(event) => restoreBackup(event.target.files?.[0])} /><Button variant="secondary" onClick={() => restoreRef.current?.click()} disabled={restoring}><Upload size={15} /> {restoring ? '恢复中…' : '导入备份恢复'}</Button>{restoreNotice && <p className={restoreOk ? 'correction-note' : 'form-error'} style={{ marginTop: 8 }}>{restoreNotice}</p>}</section></div>
 
     <section className="surface settings-section danger-zone"><header><div><AlertTriangle size={19} /><div><h2>危险操作</h2><p>删除后无法从应用内恢复</p></div></div><Button variant="danger" onClick={() => setDeleteOpen(true)}><Trash2 size={15} /> 删除项目</Button></header><p>永久删除当前项目的章节、设定档案、剧情线、事件、事实摘要、记忆索引和审查记录。建议先导出 JSON 备份。</p></section>
 

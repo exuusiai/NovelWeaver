@@ -53,11 +53,24 @@ worldRouter.patch('/api/entities/:entityId', (req, res) => {
     body.type ?? current.type, body.name ?? current.name, body.summary ?? current.summary,
     body.data ? JSON.stringify(body.data) : current.data, body.canonStatus ?? current.canon_status,
     body.confidence ?? current.confidence, sql.now(), req.params.entityId)
+  // 记忆一致性：作者改完人物卡，AI 必须立刻读到新资料。
+  // 废弃的设定从检索记忆移除（不再喂给模型）；其余状态重建记忆。
+  if ((body.canonStatus ?? current.canon_status) === 'deprecated') {
+    const stale = sql.all<{ id: string }>('SELECT id FROM memory_chunks WHERE source_type=? AND source_id=?', 'entity', req.params.entityId)
+    stale.forEach(({ id }) => sql.run('DELETE FROM memory_fts WHERE id=?', id))
+    sql.run('DELETE FROM memory_chunks WHERE source_type=? AND source_id=?', 'entity', req.params.entityId)
+  } else {
+    refreshEntityMemory(req.params.entityId)
+  }
   res.json(decodeRow(sql.get<Record<string, unknown>>('SELECT * FROM entities WHERE id = ?', req.params.entityId)!))
 })
 
 worldRouter.delete('/api/entities/:entityId', (req, res) => {
   sql.run('DELETE FROM relations WHERE from_entity_id = ? OR to_entity_id = ?', req.params.entityId, req.params.entityId)
+  // 删除设定时同步移除检索记忆，避免"已删除的设定又出现在 AI 上下文里"
+  const memoryIds = sql.all<{ id: string }>('SELECT id FROM memory_chunks WHERE source_type=? AND source_id=?', 'entity', req.params.entityId)
+  memoryIds.forEach(({ id }) => sql.run('DELETE FROM memory_fts WHERE id=?', id))
+  sql.run('DELETE FROM memory_chunks WHERE source_type=? AND source_id=?', 'entity', req.params.entityId)
   sql.run('DELETE FROM entities WHERE id = ?', req.params.entityId)
   res.status(204).end()
 })

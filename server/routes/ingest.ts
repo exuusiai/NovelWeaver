@@ -66,7 +66,18 @@ ingestRouter.post('/api/projects/:projectId/import/previews/:previewId/commit', 
   const existingFingerprints = new Set(sql.all<{ content: string; status: string }>('SELECT content, status FROM chapters WHERE project_id = ? AND LENGTH(TRIM(content)) > 0', projectId)
     .filter((row) => !replaceImported || row.status !== 'imported')
     .map((row) => chapterContentFingerprint(row.content)))
-  const filtered = chapters.filter((chapter) => !isEffectivelyEmptyChapter(chapter.title, chapter.content) && !existingFingerprints.has(chapterContentFingerprint(chapter.content)))
+  // 文学结构（循环章、间章、叙诡）可能是作者刻意的重复——提交时不再静默丢弃，
+  // 保留全部有效章节并把疑似重复列为警告，由作者在预览中自行删减。
+  const duplicateWarns: string[] = []
+  const filtered = chapters.filter((chapter) => {
+    if (isEffectivelyEmptyChapter(chapter.title, chapter.content)) return false
+    if (existingFingerprints.has(chapterContentFingerprint(chapter.content))) {
+      duplicateWarns.push(chapter.title)
+      return true
+    }
+    return true
+  })
+  if (duplicateWarns.length) diagnostics.warnings.push(`有 ${duplicateWarns.length} 章内容与现有章节相同，已按作者意图保留：${duplicateWarns.slice(0, 4).join('、')}${duplicateWarns.length > 4 ? '……' : ''}。若是无意重复，请在预览中删除。`)
   if (!filtered.length) {
     return res.status(409).json({ error: replaceImported
       ? '新文稿中没有有效章节可写入。请检查预览中的章节边界。'

@@ -20,13 +20,20 @@ export function Dashboard() {
   const replaceRef = useRef(false)
   const navigate = useNavigate()
 
+  const [loadError, setLoadError] = useState('')
   const load = async () => {
-    const [projectRow, chapterRows, statsRow] = await Promise.all([
-      api<Project>(`/api/projects/${projectId}`),
-      api<Chapter[]>(`/api/projects/${projectId}/chapters`),
-      api<ProjectStats>(`/api/projects/${projectId}/stats`).catch(() => null),
-    ])
-    setProject(projectRow); setChapters(chapterRows); setStats(statsRow)
+    setLoadError('')
+    try {
+      const [projectRow, chapterRows, statsRow] = await Promise.all([
+        api<Project>(`/api/projects/${projectId}`),
+        api<Chapter[]>(`/api/projects/${projectId}/chapters`),
+        api<ProjectStats>(`/api/projects/${projectId}/stats`).catch(() => null),
+      ])
+      setProject(projectRow); setChapters(chapterRows); setStats(statsRow)
+    } catch (caught) {
+      // 数据还在（SQLite 文件未动），只是本次读取失败——绝不伪装成空项目
+      setLoadError(`作品暂时无法读取：${(caught as Error).message}。你的数据没有被删除，可点重试。`)
+    }
   }
   useEffect(() => { load() }, [projectId])
 
@@ -64,6 +71,7 @@ export function Dashboard() {
   const metrics = project?.metrics
   const progress = metrics ? Math.min(Math.round(metrics.characters / Math.max(project.word_goal, 1) * 100), 100) : 0
   const downloadManuscript = (format: string) => { window.location.href = `/api/projects/${projectId}/export/manuscript?format=${format}` }
+  if (loadError) return <div className="dashboard-page"><div className="notice-bar"><Lightbulb size={17} /><span>{loadError}</span></div><section className="surface import-zone"><div><h3>重试读取</h3><p>如果反复失败，请检查服务是否在运行；数据文件仍在原位置。</p></div><Button onClick={load}><RefreshCw size={15} /> 重试</Button></section></div>
   return <div className="dashboard-page">
     <section className="project-brief">
       <div><div className="eyebrow"><Badge tone="teal">{project?.status === 'completed' ? '已完结' : '创作中'}</Badge><span>{project?.genre || '未设置题材'}</span></div><h2>{project?.name}</h2><p>{project?.premise || '还没有写下故事的核心命题。'}</p></div>
@@ -90,8 +98,8 @@ export function Dashboard() {
     </section>}
 
     <div className="dashboard-columns">
-      <section className="surface recent-work"><header><div><h3>继续创作</h3><p>最近编辑的章节</p></div><Button variant="ghost" onClick={() => navigate('/write')}>查看全部 <ArrowRight size={15} /></Button></header>
-        <div className="chapter-list-compact">{chapters.slice(-4).reverse().map((chapter) => <button key={chapter.id} onClick={() => { sessionStorage.setItem('novelweaver.chapter', chapter.id); navigate('/write') }}><span className="chapter-index">{String(chapter.position + 1).padStart(2, '0')}</span><div><strong>{chapter.title}</strong><p>{chapter.summary || '暂无摘要'}</p></div><Badge tone={chapter.status === 'revised' ? 'teal' : 'neutral'}>{chapter.status === 'revised' ? '已修订' : chapter.status === 'imported' ? '已导入' : '草稿'}</Badge></button>)}</div>
+      <section className="surface recent-work"><header><div><h3>继续创作</h3><p>最近编辑的章节（按修改时间）</p></div><Button variant="ghost" onClick={() => navigate('/write')}>查看全部 <ArrowRight size={15} /></Button></header>
+        <div className="chapter-list-compact">{[...chapters].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 4).map((chapter) => <button key={chapter.id} onClick={() => { sessionStorage.setItem('novelweaver.chapter', chapter.id); navigate('/write') }}><span className="chapter-index">{String(chapter.position + 1).padStart(2, '0')}</span><div><strong>{chapter.title}</strong><p>{chapter.summary || '暂无摘要'}</p></div><Badge tone={chapter.status === 'revised' ? 'teal' : 'neutral'}>{chapter.status === 'revised' ? '已修订' : chapter.status === 'imported' ? '已导入' : '草稿'}</Badge></button>)}</div>
       </section>
 
       <section className="surface today-plan"><header><div><h3>建议下一步</h3><p>根据项目状态生成</p></div><Sparkles size={18} /></header>

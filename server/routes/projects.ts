@@ -8,7 +8,7 @@ import { runReview, selfAuditReviews } from '../review.ts'
 import { buildDocx, buildEpub, buildMarkdown, buildTxt, manuscriptContentTypes, manuscriptExtension, type ManuscriptFormat } from '../exporter.ts'
 import { buildProjectExport, assembleManuscriptVolumes } from '../project-export.ts'
 import { backupPath, listBackups } from '../backup.ts'
-import { embeddingStatus, setEmbeddingModel } from '../embeddings.ts'
+import { setEmbeddingAuto, kickBackfill, getEmbeddingSweepState, embeddingStatus, setEmbeddingModel } from '../embeddings.ts'
 import { asyncRoute, decodeRow, ensureDefaultVolume, requireProject } from './helpers.ts'
 
 export const projectsRouter = Router()
@@ -67,6 +67,48 @@ projectsRouter.delete('/api/projects/:projectId', (req, res) => {
   res.status(204).end()
 })
 
+// 项目快照恢复：接受完整导出 JSON，重建为**新项目**（原名 + 恢复日期），不覆盖现有数据。
+projectsRouter.post('/api/projects/restore', asyncRoute(async (req, res) => {
+  const payload = req.body as Record<string, unknown> & { project?: Record<string, unknown>; schemaVersion?: number }
+  const source = payload.project
+  if (!source || !source.name) return res.status(400).json({ error: '这不是有效的项目备份文件（缺少 project 字段）。' })
+  const newId = sql.id(); const stamp = sql.now()
+  const restoredName = `${String(source.name)}（恢复 ${new Date().toLocaleDateString('zh-CN')}）`
+  const remap = (rows: unknown): Array<Record<string, unknown>> => Array.isArray(rows) ? rows as Array<Record<string, unknown>> : []
+  const insertRows = (table: string, rows: Array<Record<string, unknown>>, withProjectId = true) => {
+    for (const row of rows) {
+      const finalRow = withProjectId ? { ...row, project_id: newId } : row
+      const keys = Object.keys(finalRow)
+      if (!keys.length) continue
+      sql.run(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, ...keys.map((key) => (finalRow as Record<string, unknown>)[key]))
+    }
+  }
+  db.transaction(() => {
+    sql.run('INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      newId, restoredName, String(source.genre || ''), String(source.premise || ''), String(source.status || 'active'), Number(source.word_goal) || 100000, source.imported ? 1 : 0, String(source.created_at || stamp), stamp)
+    insertRows('volumes', remap(payload.volumes))
+    insertRows('chapters', remap(payload.chapters))
+    sql.run(`INSERT INTO memory_fts (id, project_id, content, summary, keywords)
+      SELECT id, project_id, content, summary, keywords FROM memory_chunks WHERE project_id = ?`, newId)
+    insertRows('chapter_volume_bindings', remap(payload.chapterVolumeBindings), false)
+    insertRows('entities', remap(payload.entities))
+    insertRows('plotlines', remap(payload.plotlines))
+    insertRows('story_outlines', remap(payload.outlines))
+    insertRows('events', remap(payload.events))
+    insertRows('relations', remap(payload.relations))
+    insertRows('foreshadowing', remap(payload.foreshadowing))
+    insertRows('story_facts', remap(payload.facts))
+    insertRows('chapter_outlines', remap(payload.chapterOutlines))
+    insertRows('memory_chunks', remap(payload.memoryChunks))
+    insertRows('imports', remap(payload.imports))
+    insertRows('reviews', remap(payload.reviews))
+    insertRows('generations', remap(payload.generations))
+    insertRows('chapter_history', remap(payload.chapterHistory), false)
+    insertRows('analysis_runs', remap(payload.analysisRuns))
+  })()
+  res.status(201).json({ id: newId, name: restoredName, schemaVersion: payload.schemaVersion ?? null, chapters: remap(payload.chapters).length })
+}))
+
 projectsRouter.get('/api/projects/:projectId/search', asyncRoute(async (req, res) => {
   const projectId = String(req.params.projectId)
   requireProject(projectId)
@@ -89,6 +131,16 @@ projectsRouter.post('/api/model', (req, res) => {
   res.json({ ...status, embedding: embeddingStatus() })
 })
 projectsRouter.post('/api/model/probe', asyncRoute(async (_req, res) => { res.json(await probeModel()) }))
+// 向量化控制：作者可暂停后台发送，或手动触发一次处理
+projectsRouter.post('/api/embeddings/auto', (req, res) => {
+  const body = z.object({ enabled: z.boolean() }).parse(req.body)
+  setEmbeddingAuto(body.enabled)
+  res.json({ ...embeddingStatus(), auto: body.enabled })
+})
+projectsRouter.post('/api/embeddings/backfill-now', asyncRoute(async (_req, res) => {
+  await kickBackfill(true)
+  res.json(embeddingStatus())
+}))
 // 拉取网关可用模型列表：用户不必猜测模型名。只读探测，不触碰运行时配置。
 projectsRouter.post('/api/model/catalog', asyncRoute(async (req, res) => {
   const body = z.object({ baseUrl: z.string().trim().min(1), apiKey: z.string().trim().optional() }).parse(req.body)

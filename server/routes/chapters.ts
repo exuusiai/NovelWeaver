@@ -80,13 +80,19 @@ chaptersRouter.post('/api/projects/:projectId/chapters', (req, res) => {
 chaptersRouter.patch('/api/chapters/:chapterId', (req, res) => {
   const current = sql.get<Record<string, unknown>>('SELECT * FROM chapters WHERE id = ?', req.params.chapterId)
   if (!current) return res.status(404).json({ error: '章节不存在。' })
-  const body = z.object({ title: z.string().optional(), content: z.string().optional(), summary: z.string().optional(), pov: z.string().optional(), status: z.string().optional(), targetWords: z.number().int().positive().optional(), position: z.number().int().nonnegative().optional() }).parse(req.body)
+  const body = z.object({ title: z.string().optional(), content: z.string().optional(), summary: z.string().optional(), pov: z.string().optional(), status: z.string().optional(), targetWords: z.number().int().positive().optional(), position: z.number().int().nonnegative().optional(), detailedOutline: z.string().optional() }).parse(req.body)
   if (body.content !== undefined && chapterContentFingerprint(String(current.content)) !== chapterContentFingerprint(body.content)) {
     saveChapterHistory({ id: String(current.id), project_id: String(current.project_id), title: String(current.title), content: String(current.content), summary: String(current.summary ?? '') })
   }
   const contentChanged = body.content !== undefined && body.content !== current.content
   const positionChanged = body.position !== undefined && body.position !== current.position
   db.transaction(() => {
+    if (body.detailedOutline !== undefined) {
+      // 细纲与正文走同一条自动保存链路：作者不需要知道"细纲要单独存"
+      const existing = sql.get<{ id: string }>('SELECT id FROM chapter_outlines WHERE chapter_id=?', req.params.chapterId)
+      if (existing) sql.run("UPDATE chapter_outlines SET content=?, status=CASE WHEN status='archived' THEN status ELSE 'active' END, updated_at=? WHERE id=?", body.detailedOutline, sql.now(), existing.id)
+      else sql.run('INSERT INTO chapter_outlines (id, project_id, chapter_id, title, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', sql.id(), current.project_id, req.params.chapterId, '本章细纲', body.detailedOutline, 'active', sql.now(), sql.now())
+    }
     sql.run(`UPDATE chapters SET title=?, content=?, summary=?, pov=?, status=?, target_words=?, position=?, content_hash=?, updated_at=? WHERE id=?`,
       body.title ?? current.title, body.content ?? current.content, body.summary ?? current.summary, body.pov ?? current.pov,
       body.status ?? current.status, body.targetWords ?? current.target_words, body.position ?? current.position,
@@ -120,8 +126,9 @@ chaptersRouter.post('/api/chapters/:chapterId/history/:historyId/restore', (req,
   const stamp = sql.now()
   db.transaction(() => {
     saveChapterHistory({ id: String(chapter.id), project_id: String(chapter.project_id), title: String(chapter.title), content: String(chapter.content), summary: String(chapter.summary ?? '') })
-    sql.run('UPDATE chapters SET title=?, content=?, summary=?, updated_at=? WHERE id=?',
-      version.title, version.content, version.summary || String(chapter.summary ?? ''), stamp, req.params.chapterId)
+    sql.run(`UPDATE chapters SET title=?, content=?, summary=?, content_hash=?, analyzed_hash='', updated_at=? WHERE id=?`,
+      version.title, version.content, version.summary || String(chapter.summary ?? ''), contentHash(version.content), stamp, req.params.chapterId)
+    // 恢复旧稿 = 正文回到旧版本：记忆重建 + analyzed_hash 清空（分析结果视为过期）
     rebuildChapterMemory(String(chapter.project_id), req.params.chapterId, version.title, version.content, version.summary)
     sql.run('UPDATE projects SET updated_at=? WHERE id=?', stamp, chapter.project_id)
   })()

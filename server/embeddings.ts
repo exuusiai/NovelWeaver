@@ -32,6 +32,9 @@ export function embeddingStatus() {
     total,
     embedded,
     coverage: total ? Number((embedded / total).toFixed(3)) : 1,
+    auto: autoBackfill,
+    lastError: lastBackfillError || null,
+    lastSweepAt: lastSweepAt || null,
   }
 }
 
@@ -96,16 +99,35 @@ async function backfillSweep() {
   return rows.length
 }
 
-export async function kickBackfill() {
+// 自动向量化开关：默认开。关闭后新内容只走词法检索，作者可稍后手动触发。
+let autoBackfill = true
+let lastBackfillError = ''
+let lastSweepAt = ''
+
+export function setEmbeddingAuto(enabled: boolean) {
+  autoBackfill = enabled
+  if (enabled && embeddingModel) void kickBackfill()
+}
+
+export function getEmbeddingAuto() { return autoBackfill }
+
+export function getEmbeddingSweepState() { return { lastError: lastBackfillError, lastSweepAt } }
+
+export async function kickBackfill(force = false) {
   if (!embeddingModel || backfillRunning) return
+  if (!force && !autoBackfill) return
   backfillRunning = true
   try {
     while (embeddingModel) {
       const done = await backfillSweep()
       if (!done) break
     }
+    lastBackfillError = ''
+    lastSweepAt = new Date().toISOString()
   } catch (error) {
-    console.error('[embeddings] backfill paused:', (error as Error).message)
+    // 失败不再吞掉：作者能在设置页看到原因（额度耗尽/网络/权限等）
+    lastBackfillError = (error as Error).message
+    console.error('[embeddings] backfill paused:', lastBackfillError)
   } finally {
     backfillRunning = false
   }

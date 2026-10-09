@@ -1,4 +1,5 @@
 import { db, sql } from './db.ts'
+import { contentHash } from './routes/helpers.ts'
 import { cosine, embedQuery, getEmbeddingModel, MIN_EMBEDDING_COVERAGE, projectEmbeddingCoverage } from './embeddings.ts'
 
 export interface SearchHit {
@@ -164,7 +165,9 @@ export function deriveEntityStates(projectId: string, beforePosition?: number): 
 // name a known entity are best served by the tuned lexical hybrid (round 1: 100% vs 94%),
 // name-free paraphrase queries by pure vectors (round 2: 100% vs 89%). Blind RRF fusion
 // lost in both regimes, so this is an either/or gate, not a blend.
-export async function searchMemory(projectId: string, query: string, limit = 12, currentChapterId?: string): Promise<SearchHit[]> {
+export interface SearchMemoryOptions { excludeFuture?: boolean }
+
+export async function searchMemory(projectId: string, query: string, limit = 12, currentChapterId?: string, opts: SearchMemoryOptions = {}): Promise<SearchHit[]> {
   const version = projectVersion(projectId)
   // 覆盖率进缓存键：向量回填会改变可用索引但不动 projectVersion，缺少这一位
   // 会让回填后的查询继续命中回填前的词法缓存。
@@ -224,7 +227,13 @@ export async function searchMemory(projectId: string, query: string, limit = 12,
       chapterDistance: distance, reason: `${matched.slice(0, 4).join('、') || '全文相关'}${distance === null ? '' : `；距当前章 ${distance} 章`}`,
     }
   })
-  const lexicalHits = hits.sort((a, b) => b.score - a.score).slice(0, limit).map((hit) => ({
+  const lexicalHits = hits
+    .filter((hit) => {
+      if (!opts.excludeFuture || currentPosition === undefined || hit.chapterId === null) return true
+      const rowPosition = positions.get(hit.chapterId)
+      return rowPosition === undefined || rowPosition <= currentPosition
+    })
+    .sort((a, b) => b.score - a.score).slice(0, limit).map((hit) => ({
     ...hit,
     path: 'lexical' as const,
   }))
@@ -237,6 +246,11 @@ export async function searchMemory(projectId: string, query: string, limit = 12,
         const queryVector = await embedQuery(query)
         const vectorHits = projectVectors(projectId, version)
           .map(({ vector, ...row }) => ({ row, score: (cosine(queryVector, vector) + 1) / 2 }))
+          .filter((item) => {
+            if (!opts.excludeFuture || currentPosition === undefined || item.row.chapterId === null) return true
+            const rowPosition = positions.get(String(item.row.chapterId))
+            return rowPosition === undefined || rowPosition <= currentPosition
+          })
           .sort((a, b) => b.score - a.score)
           .slice(0, limit)
           .map(({ row, score }) => {
@@ -263,7 +277,7 @@ export async function searchMemory(projectId: string, query: string, limit = 12,
 // 全书宏观记忆：超长作品"越写越散"的根因是生成上下文只有章节/实体/事件粒度，
 // 缺少全书层视角。这里从结构化数据确定性拼装一个紧凑块（卷结构、未回收伏笔、体量进度），
 // 不经模型、不产生幻觉，注入 assembleContext 使每次生成都带着全书坐标系。
-export function buildMacroMemory(projectId: string): string {
+export function buildMacroMemory(projectId: string, beforePosition?: number): string {
   const project = sql.get<{ name: string; genre: string; premise: string; word_goal: number }>('SELECT name, genre, premise, word_goal FROM projects WHERE id = ?', projectId)
   if (!project) return ''
   const stats = sql.get<{ n: number; chars: number }>('SELECT COUNT(*) n, COALESCE(SUM(LENGTH(TRIM(content))), 0) chars FROM chapters WHERE project_id = ?', projectId) ?? { n: 0, chars: 0 }
@@ -276,7 +290,9 @@ export function buildMacroMemory(projectId: string): string {
   }
   const openForeshadowing = sql.all<{ title: string; position: number | null }>(
     `SELECT f.title, c.position FROM foreshadowing f LEFT JOIN chapters c ON c.id = f.setup_chapter_id
-     WHERE f.project_id = ? AND f.status != 'resolved' ORDER BY c.position LIMIT 8`, projectId)
+     WHERE f.project_id = ? AND f.status != 'resolved'
+     ${beforePosition !== undefined ? 'AND (c.position IS NULL OR c.position <= ?)' : ''}
+     ORDER BY c.position LIMIT 8`, beforePosition !== undefined ? [projectId, beforePosition] : [projectId])
   if (openForeshadowing.length) {
     sections.push(`【未回收伏笔】${openForeshadowing.map((item) => `${item.title}${item.position !== null ? `（第 ${item.position + 1} 章埋设）` : ''}`).join('；')}`)
   }
@@ -304,7 +320,8 @@ export interface ContextOptions {
 
 export async function assembleContext(projectId: string, prompt: string, chapterId?: string, tokenBudget = 10000, options: ContextOptions = {}): Promise<AssembledContext> {
   const scope = options.scope ?? (chapterId ? 'upto' : 'full')
-  const overrideKey = `${options.content?.length || 0}:${options.outline?.length || 0}:${scope}`
+  // 编辑快照用内容指纹：同长度的不同修改（"接受邀请"→"拒绝邀请"）不会被旧缓存吞掉
+  const overrideKey = `${contentHash(options.content || '')}:${contentHash(options.outline || '')}:${scope}`
   const cacheKey = `${projectVersion(projectId)}:${chapterId || ''}:${tokenBudget}:${normalize(prompt)}:${overrideKey}`
   const cached = contextCache.get(cacheKey)
   if (cached) return cached
@@ -316,10 +333,17 @@ export async function assembleContext(projectId: string, prompt: string, chapter
     || (chapterId ? sql.get<{ content: string }>('SELECT content FROM chapter_outlines WHERE chapter_id = ?', chapterId)?.content || '' : '')
   const volume = chapterId ? sql.get<Record<string, unknown>>(`SELECT v.title, v.summary FROM volumes v
     JOIN chapter_volume_bindings b ON b.volume_id=v.id WHERE b.chapter_id=?`, chapterId) : undefined
-  const hits = await searchMemory(projectId, prompt, 16, chapterId)
+  // excludeFuture：upto 模式下原文检索不得越过当前章（改前几章不泄露后文）
+  const hits = await searchMemory(projectId, prompt, 16, chapterId, { excludeFuture: scope === 'upto' })
   // 事实的时序以"来源章节的当前 position"动态计算（c.position），章节重排后
   // 事实的新旧自动跟随，不再依赖分析时固化的 introduced_position 快照。
   const currentPosition = typeof chapter?.position === 'number' ? Number(chapter.position) : undefined
+  const chapterMeta = chapterId
+    ? sql.all<{ id: string; title: string; position: number }>('SELECT id, title, position FROM chapters WHERE project_id = ? ORDER BY position', projectId)
+    : []
+  const currentVolumeTitle = chapterId
+    ? sql.get<{ title: string }>(`SELECT v.title FROM chapter_volume_bindings b JOIN volumes v ON v.id=b.volume_id WHERE b.chapter_id=?`, chapterId)?.title
+    : undefined
   const uptoFilter = scope === 'upto' && currentPosition !== undefined
   const allFacts = sql.all<Record<string, unknown>>(`SELECT f.*, c.title chapter_title, c.position live_position FROM story_facts f
     LEFT JOIN chapters c ON c.id=f.source_chapter_id WHERE f.project_id=? AND f.canon_status IN ('canon','candidate')
@@ -340,7 +364,26 @@ export async function assembleContext(projectId: string, prompt: string, chapter
     const matched = [String(row.name), ...aliases].some((name) => name.length > 1 && referenceText.includes(normalize(name)))
     const pinned = meta.pinned === true || meta.pinned === 'true'
     return { row, meta, matched, pinned, index, rank: (matched ? 100 : 0) + (pinned ? 80 : 0) + Number(meta.contextPriority || 50) / 10 + Number(row.confidence || 0) }
-  }).filter((item) => (item.matched || item.pinned || item.index < 8) && (!item.meta.contextScope || item.meta.contextScope !== 'manual' || item.matched || item.pinned))
+  }).filter((item) => {
+    if (!(item.matched || item.pinned || item.index < 8)) return false
+    if (item.meta.contextScope === 'manual' && !(item.matched || item.pinned)) return false
+    // 作用范围硬过滤：作者设定"仅当前卷/指定章节附近"的资料卡，越界时不再静默注入
+    const scopeValue = String(item.meta.contextScope || 'project')
+    if (scopeValue === 'project') return true
+    if (item.pinned) return true
+    if (scopeValue === 'volume') {
+      const target = String(item.meta.contextVolume || '').trim()
+      return Boolean(target && currentVolumeTitle && currentVolumeTitle.includes(target))
+    }
+    if (scopeValue === 'chapter') {
+      const target = String(item.meta.contextNearChapter || '').trim()
+      if (!target || currentPosition === undefined) return true
+      const anchor = chapterMeta.find((chapter) => typeof chapter.position === 'number' && String(chapter.title).includes(target))
+      if (!anchor || typeof anchor.position !== 'number') return true
+      return Math.abs(anchor.position - currentPosition) <= 2
+    }
+    return true
+  })
     .sort((a, b) => b.rank - a.rank).slice(0, 18)
   // 一跳关系邻居：多跳问题（"A 的哥哥的敌人"）无法靠词法/向量直接命中，
   // 从 relations 表为已入选实体补一跳图结构上下文；已在资料卡中的邻居跳过。
@@ -371,17 +414,26 @@ export async function assembleContext(projectId: string, prompt: string, chapter
   const make = (kind: string, label: string, text: string, priority: number, relevance = 0): ContextItem => ({ kind, label, text, priority, relevance, tokens: estimateTokens(text) })
   const items: ContextItem[] = [
     make('project', '项目基线', `【项目】${project?.name ?? ''}\n题材：${project?.genre ?? ''}\n核心命题：${project?.premise ?? ''}`, 100),
-    ...(() => { const macro = buildMacroMemory(projectId); return macro ? [make('macro', '全书概览', macro, 90)] : [] })(),
+    ...(() => { const macro = buildMacroMemory(projectId, scope === 'upto' ? currentPosition : undefined); return macro ? [make('macro', '全书概览', macro, 90)] : [] })(),
     ...(chapter ? [make('chapter', `当前章节：${chapter.title}`, `【当前章节】${chapter.title}\n视角：${chapter.pov}\n摘要：${chapter.summary}\n正文末尾：${String(chapter.content).slice(-1800)}`, 98)] : []),
     ...(outlineText ? [make('outline', '本章细纲', `【本章细纲】${outlineText}`, 96)] : []),
     ...states.map((state) => make('state', `人物状态：${state.name}`,
       `【人物状态】${state.name}：最近事件「${state.lastEvent}」${state.lastTime ? `（${state.lastTime}）` : ''}${state.lastLocation ? `@${state.lastLocation}` : ''}；累计参与 ${state.eventCount} 个事件。此后未再出场，不要让其知晓之后发生的事。`, 92)),
     ...(volume ? [make('volume', `所属卷：${volume.title}`, `【所属卷】${volume.title}\n卷摘要：${volume.summary || '尚未填写'}`, 88)] : []),
-    ...plotlines.map((row) => make('plotline', `剧情线：${row.name}`, `【剧情线/${row.status}】${row.name}（${row.type}）：${row.summary}`, 78)),
+    ...plotlines.map((row) => make('plotline', `剧情线：${row.name}`, `【剧情线/${row.status}${scope === 'upto' ? '·作者规划，角色不得表现知晓' : ''}】${row.name}（${row.type}）：${row.summary}`, 78)),
     ...facts.map(({ row, matched }) => make('fact', `事实：${row.subject}`, `【事实/${row.canon_status}】${row.subject}｜${row.predicate}｜${row.value}${row.evidence ? `\n证据：${row.evidence}` : ''}`, row.canon_status === 'canon' ? 82 : 58, Number(row.importance) / 10 + (matched ? 25 : 0))),
     ...entities.map(({ row, meta, matched, pinned }) => {
       const priority = Number(meta.contextPriority || 50) + (pinned ? 25 : 0)
-      return make('card', `资料卡：${row.name}`, `【资料卡/${row.type}/${row.canon_status}】${row.name}：${row.summary}`, 45 + priority / 2, matched ? 25 : 0)
+      // 约束性档案字段直接进卡：作者填的"能力代价/禁忌/性格/秘密"是生成时最容易被
+      // 越界的内容，不能只靠检索碰运气
+      const constraintKeys = ['species', 'occupation', 'faction', 'personality', 'abilities', 'strengths', 'weaknesses', 'limitations', 'cost', 'counters', 'flaws', 'fear', 'bottomLine', 'falseBelief', 'secret', 'rules', 'principles', 'goal']
+      const constraints = constraintKeys
+        .map((key) => [key, meta[key]])
+        .filter(([, value]) => typeof value === 'string' && value.trim())
+        .slice(0, 5)
+        .map(([key, value]) => `${key}=${String(value).slice(0, 60)}`)
+      const constraintText = constraints.length ? `\n约束：${constraints.join('；')}` : ''
+      return make('card', `资料卡：${row.name}`, `【资料卡/${row.type}/${row.canon_status}】${row.name}：${row.summary}${constraintText}`, 45 + priority / 2, matched ? 25 : 0)
     }),
     ...events.map((row) => make('event', `事件：${row.title}`, `【事件】${row.story_time || ''} ${row.title}：${row.summary}`, 48)),
     ...neighbors.map((row) => make('neighbor', `关系邻居：${row.name}`,

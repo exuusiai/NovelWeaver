@@ -6,7 +6,7 @@ import { useProject } from '../project-context'
 import type { Chapter, ChapterHistory, ContextReport, GenerationResult, PrecheckIssue, Volume } from '../types'
 import { Badge, Button, EmptyState, Field, IconButton, Input, MarkdownLike, Modal, Textarea } from '../components/ui'
 
-const snapshotOf = (chapter: Chapter) => JSON.stringify([chapter.title, chapter.content, chapter.summary, chapter.pov, chapter.status, chapter.target_words])
+const snapshotOf = (chapter: Chapter) => JSON.stringify([chapter.title, chapter.content, chapter.summary, chapter.pov, chapter.status, chapter.target_words, chapter.detailed_outline || ''])
 const cleanGeneratedProse = (output: string) => output
   .replace(/^#.*\n/, '')
   .replace(/\s*\[R\d+\]/g, '')
@@ -119,7 +119,7 @@ export function WritingStudio() {
     setSaving(true); setSaved(false); setAutosave('saving')
     // 快照统一走 snapshotOf（与自动保存判定同一函数），否则保存成功后仍被
     // 判定为有未保存更改，造成重复保存与提示失真
-    const payload = { title: current.title, content: current.content, summary: current.summary, pov: current.pov, status: current.status, targetWords: current.target_words }
+    const payload = { title: current.title, content: current.content, summary: current.summary, pov: current.pov, status: current.status, targetWords: current.target_words, detailedOutline: current.detailed_outline || '' }
     const snapshot = snapshotOf({ ...current, ...payload } as Chapter)
     const previousSnapshot = savedSnapshotRef.current
     savedSnapshotRef.current = snapshot
@@ -251,10 +251,11 @@ export function WritingStudio() {
     setPreviewing(true)
     try {
       const [context, precheck] = await Promise.all([
-        post<{ report: ContextReport }>('/api/ai/context', { projectId, chapterId: draft.id, prompt, tokenBudget: 10000 }),
+        // 与实际生成完全同一份编辑快照：未保存正文 + 当前细纲 + upto 视角
+        post<{ report: ContextReport }>('/api/ai/context', { projectId, chapterId: draft.id, prompt, tokenBudget: 10000, chapterContent: draft.content, chapterOutline: draft.detailed_outline || undefined, scope: 'upto' }),
         api<{ issues: PrecheckIssue[] }>(`/api/chapters/${draft.id}/precheck`).catch(() => ({ issues: [] as PrecheckIssue[] })),
       ])
-      setContextReport(context.report); setPrecheckIssues(precheck.issues)
+      previewSnapshotRef.current = snapshotOf({ ...draft, content: draft.content } as Chapter); setContextReport(context.report); setPrecheckIssues(precheck.issues)
     } finally { setPreviewing(false) }
   }
   const rewriteSummary = async () => {
@@ -288,6 +289,14 @@ export function WritingStudio() {
     if (generationId) void post(`/api/generations/${generationId}/feedback`, { action }).catch(() => undefined)
   }
   const [adoptionNotice, setAdoptionNotice] = useState<string | null>(null)
+  // 预览依据与编辑内容的一致性：作者改字后预览即过期，清空旧报告防止误信
+  const previewSnapshotRef = useRef('')
+  useEffect(() => {
+    if (contextReport && previewSnapshotRef.current && snapshotOf(draftRef.current || ({ content: '' } as Chapter)) !== previewSnapshotRef.current) {
+      setContextReport(null)
+      previewSnapshotRef.current = ''
+    }
+  }, [draft, contextReport])
   // 采纳后自动预检：对比采纳前后的规则检查差异，把"这次生成引入了什么问题"变成即时反馈
   const appendResult = async () => {
     if (!draft || !currentResult?.output.trim()) return
