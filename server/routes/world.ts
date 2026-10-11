@@ -146,6 +146,21 @@ worldRouter.post('/api/entity-edits/:editId/undo', (req, res) => {
     } else if (edit.action === 'split' && snapshot.entity) {
       payload.createdIds?.forEach((id) => { sql.run('DELETE FROM relations WHERE from_entity_id=? OR to_entity_id=?', id, id); sql.run('DELETE FROM entities WHERE id=?', id) }); const entity = snapshot.entity
       sql.run('UPDATE entities SET type=?, name=?, summary=?, data=?, canon_status=?, confidence=?, source_chapter_id=?, updated_at=? WHERE id=?', entity.type, entity.name, entity.summary, entity.data, entity.canon_status, entity.confidence, entity.source_chapter_id, entity.updated_at, entity.id); refreshEntityMemory(String(entity.id))
+    } else if (edit.action === 'rename' && snapshot.entity) {
+      // 字段级撤销：重命名只影响 name 与别名——之后作者保存的年龄/经历等字段
+      // 全部保留，不再把整张人物卡回滚到操作前
+      const before = snapshot.entity
+      const current = sql.get<{ name: string; data: string }>('SELECT name, data FROM entities WHERE id = ?', String(before.id))
+      if (!current) return  // 实体已删除：无事可做
+      let data: Record<string, unknown> = {}
+      try { data = JSON.parse(String(current.data || '{}')) } catch { /* ignore */ }
+      let beforeAliases: string[] = []
+      try { beforeAliases = Array.isArray(JSON.parse(String(before.data || '{}')).aliases) ? JSON.parse(String(before.data || '{}')).aliases : [] } catch { /* ignore */ }
+      const payloadInfo = (decoded.payload || {}) as { oldName?: string }
+      const aliases = [...new Set([...(Array.isArray(data.aliases) ? data.aliases.map(String) : []), ...(payloadInfo.oldName ? [payloadInfo.oldName] : [])])].filter((name) => name && name !== before.name)
+      data.aliases = aliases.length ? aliases : beforeAliases
+      sql.run('UPDATE entities SET name=?, data=?, updated_at=? WHERE id=?', String(before.name), JSON.stringify(data), sql.now(), String(before.id))
+      refreshEntityMemory(String(before.id))
     } else if (snapshot.entity) {
       const entity = snapshot.entity; sql.run('UPDATE entities SET type=?, name=?, summary=?, data=?, canon_status=?, confidence=?, source_chapter_id=?, updated_at=? WHERE id=?', entity.type, entity.name, entity.summary, entity.data, entity.canon_status, entity.confidence, entity.source_chapter_id, entity.updated_at, entity.id); refreshEntityMemory(String(entity.id))
     }
@@ -192,9 +207,27 @@ worldRouter.get('/api/projects/:projectId/graph', (req, res) => {
 
 worldRouter.post('/api/projects/:projectId/relations', (req, res) => {
   requireProject(req.params.projectId)
-  const body = z.object({ fromEntityId: z.string(), toEntityId: z.string(), type: z.string(), label: z.string().default(''), sentiment: z.string().default('neutral'), strength: z.number().int().min(0).max(100).default(50) }).parse(req.body)
+  const body = z.object({ fromEntityId: z.string(), toEntityId: z.string(), type: z.string(), label: z.string().default(''), sentiment: z.string().default('neutral'), strength: z.number().int().min(0).max(100).default(50), validFrom: z.string().default(''), validTo: z.string().default('') }).parse(req.body)
   const relationId = sql.id()
-  sql.run('INSERT INTO relations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', relationId, req.params.projectId, body.fromEntityId, body.toEntityId,
-    body.type, body.label, body.sentiment, body.strength, '', '', sql.now())
-  res.status(201).json(sql.get('SELECT * FROM relations WHERE id = ?', relationId))
+  // 作者手动建立的关系直接是正史（与 AI 候选区分），否则"仅正史"视图看不到自己画的线
+  sql.run('INSERT INTO relations (id, project_id, from_entity_id, to_entity_id, type, label, sentiment, strength, valid_from, valid_to, created_at, canon_status, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    relationId, req.params.projectId, body.fromEntityId, body.toEntityId, body.type, body.label, body.sentiment, body.strength, body.validFrom, body.validTo, sql.now(), 'canon', '作者手动建立')
+  res.status(201).json(decodeRow(sql.get<Record<string, unknown>>('SELECT * FROM relations WHERE id = ?', relationId)!))
+})
+
+// 关系修订：作者改描述/强度/情感/生效区间，或确认候选、驳回错误推断
+worldRouter.patch('/api/relations/:relationId', (req, res) => {
+  const current = sql.get<Record<string, unknown>>('SELECT * FROM relations WHERE id = ?', req.params.relationId)
+  if (!current) return res.status(404).json({ error: '关系不存在。' })
+  const body = z.object({ type: z.string().optional(), label: z.string().optional(), sentiment: z.string().optional(), strength: z.number().int().min(0).max(100).optional(), validFrom: z.string().optional(), validTo: z.string().optional(), canonStatus: z.enum(['canon', 'candidate', 'deprecated']).optional() }).parse(req.body)
+  sql.run('UPDATE relations SET type=?, label=?, sentiment=?, strength=?, valid_from=?, valid_to=?, canon_status=?, updated_at=? WHERE id=?',
+    body.type ?? current.type, body.label ?? current.label, body.sentiment ?? current.sentiment,
+    body.strength ?? current.strength, body.validFrom ?? current.valid_from, body.validTo ?? current.valid_to,
+    body.canonStatus ?? current.canon_status, sql.now(), req.params.relationId)
+  res.json(decodeRow(sql.get<Record<string, unknown>>('SELECT * FROM relations WHERE id = ?', req.params.relationId)!))
+})
+
+worldRouter.delete('/api/relations/:relationId', (req, res) => {
+  sql.run('DELETE FROM relations WHERE id = ?', req.params.relationId)
+  res.status(204).end()
 })

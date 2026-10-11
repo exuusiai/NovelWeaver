@@ -19,7 +19,7 @@ const root = path.resolve(here, '..')
 const port = Number(process.env.PORT || 4300)
 
 const app = express()
-app.use(express.json({ limit: '5mb' }))
+app.use(express.json({ limit: '200mb' }))
 
 app.use(projectsRouter)
 app.use(chaptersRouter)

@@ -292,6 +292,9 @@ for (const statement of [
   "ALTER TABLE memory_chunks ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE chapter_history ADD COLUMN detailed_outline TEXT NOT NULL DEFAULT ''",
   'ALTER TABLE chapter_marks ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0',
+  "ALTER TABLE relations ADD COLUMN canon_status TEXT NOT NULL DEFAULT 'candidate'",
+  "ALTER TABLE relations ADD COLUMN evidence TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE relations ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
 ]) {
   try { db.exec(statement) } catch { /* column already exists */ }
 }

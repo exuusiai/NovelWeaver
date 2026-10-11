@@ -1041,3 +1041,17 @@ h1, h2, h3, p { margin: 0; }
 .history-diff .diff-hint { color: var(--faint); font-size: 9px; margin-bottom: 6px; }
 .history-diff .diff-del { color: #963d34; background: #f6e5e3; border-radius: 3px; padding: 2px 6px; }
 .history-diff .diff-add { color: #12645e; background: var(--teal-soft); border-radius: 3px; padding: 2px 6px; }
+
+.relation-edit { display: grid; gap: 9px; margin-top: 10px; }
+.relation-edit-actions { display: flex; gap: 7px; }
+.relation-evidence { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 9px; }
+.relation-evidence span { font-size: 9px; color: var(--faint); }
+.relation-evidence p { font-size: 10px; color: #4d5754; line-height: 1.6; margin: 4px 0 6px; background: #f8f7f3; border-radius: 4px; padding: 7px 9px; }
+.relation-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+
+.field-suggestions { margin-top: 12px; display: grid; gap: 8px; }
+.field-suggestions > strong { font-size: 11px; color: var(--teal); }
+.field-suggestion { display: flex; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fafaf7; }
+.field-suggestion > div { flex: 1; min-width: 0; }
+.field-suggestion span { font-size: 9px; color: var(--faint); font-weight: 700; }
+.field-suggestion p { font-size: 10px; color: #4d5754; margin: 3px 0 0; line-height: 1.5; }

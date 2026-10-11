@@ -80,7 +80,12 @@ chaptersRouter.post('/api/projects/:projectId/chapters', (req, res) => {
 chaptersRouter.patch('/api/chapters/:chapterId', (req, res) => {
   const current = sql.get<Record<string, unknown>>('SELECT * FROM chapters WHERE id = ?', req.params.chapterId)
   if (!current) return res.status(404).json({ error: '章节不存在。' })
-  const body = z.object({ title: z.string().optional(), content: z.string().optional(), summary: z.string().optional(), pov: z.string().optional(), status: z.string().optional(), targetWords: z.number().int().positive().optional(), position: z.number().int().nonnegative().optional(), detailedOutline: z.string().optional() }).parse(req.body)
+  const body = z.object({ title: z.string().optional(), content: z.string().optional(), summary: z.string().optional(), pov: z.string().optional(), status: z.string().optional(), targetWords: z.number().int().positive().optional(), position: z.number().int().nonnegative().optional(), detailedOutline: z.string().optional(), expectedUpdatedAt: z.string().optional() }).parse(req.body)
+  // 乐观并发控制：另一窗口已保存过（updated_at 前移）而本次还基于旧版本提交 → 409，
+  // 绝不静默覆盖。客户端可带服务器新 updated_at 重试（明确选择"用我的版本"）。
+  if (body.expectedUpdatedAt && body.expectedUpdatedAt !== current.updated_at) {
+    return res.status(409).json({ error: '此章已在另一窗口修改，为防覆盖未保存本次更改。', conflict: true, serverChapter: sql.get(chapterSelect('WHERE c.id = ?'), req.params.chapterId) })
+  }
   const outlineBefore = sql.get<{ content: string }>('SELECT content FROM chapter_outlines WHERE chapter_id=?', req.params.chapterId)?.content ?? ''
   const outlineChanged = body.detailedOutline !== undefined && body.detailedOutline !== outlineBefore
   // 正文或细纲变化都留快照：细纲单独改动同样可从历史恢复

@@ -7,6 +7,8 @@ export function buildProjectExport(projectId: string) {
     project: sql.get('SELECT * FROM projects WHERE id = ?', projectId),
     chapters: sql.all('SELECT * FROM chapters WHERE project_id = ? ORDER BY position', projectId),
     volumes: sql.all('SELECT * FROM volumes WHERE project_id = ? ORDER BY order_index', projectId),
+    chapterMarks: sql.all(`SELECT m.* FROM chapter_marks m JOIN chapters c ON c.id=m.chapter_id
+      WHERE c.project_id=?`, projectId),
     chapterVolumeBindings: sql.all(`SELECT b.* FROM chapter_volume_bindings b JOIN chapters c ON c.id=b.chapter_id
       WHERE c.project_id=? ORDER BY b.volume_id, b.order_index`, projectId),
     entities: sql.all<Record<string, unknown>>('SELECT * FROM entities WHERE project_id = ? ORDER BY type, name', projectId).map(decodeRow),

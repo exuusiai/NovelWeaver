@@ -55,6 +55,7 @@ export function WritingStudio() {
   const draftRef = useRef<Chapter | null>(null)
   const savedSnapshotRef = useRef('')
   const saveRefRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false))
+  const expectedUpdatedRef = useRef('')
   const errorSnapshotRef = useRef('')
   const savingRef = useRef(false)
 
@@ -70,6 +71,7 @@ export function WritingStudio() {
   }
   const applyDraft = (row: Chapter) => {
     draftRef.current = row
+    expectedUpdatedRef.current = row.updated_at || ''
     savedSnapshotRef.current = snapshotOf(row)
     errorSnapshotRef.current = ''
     setAutosave('saved')
@@ -141,10 +143,21 @@ export function WritingStudio() {
     if (!current || savingRef.current) return false
     savingRef.current = true
     setSaving(true); setSaved(false); setAutosave('saving')
-    // 快照统一走 snapshotOf（与自动保存判定同一函数），否则保存成功后仍被
-    // 判定为有未保存更改，造成重复保存与提示失真
-    const payload = { title: current.title, content: current.content, summary: current.summary, pov: current.pov, status: current.status, targetWords: current.target_words, detailedOutline: current.detailed_outline || '' }
-    const snapshot = snapshotOf({ ...current, ...payload } as Chapter)
+    // 字段级提交：只发真正变化的字段——另一窗口改了正文时，本窗口只改视角
+    // 不会把旧正文一并提交（旧稿覆盖新稿的主要通道）
+    const baseline = chapters.find((row) => row.id === current.id)
+    const changed: Record<string, unknown> = {}
+    if (baseline && baseline.title !== current.title) changed.title = current.title
+    if (baseline && baseline.content !== current.content) changed.content = current.content
+    if (baseline && baseline.summary !== current.summary) changed.summary = current.summary
+    if (baseline && baseline.pov !== current.pov) changed.pov = current.pov
+    if (baseline && baseline.status !== current.status) changed.status = current.status
+    if (baseline && baseline.target_words !== current.target_words) changed.targetWords = current.target_words
+    if (baseline && (baseline.detailed_outline || '') !== (current.detailed_outline || '')) changed.detailedOutline = current.detailed_outline || ''
+    if (!baseline) { changed.title = current.title; changed.content = current.content; changed.summary = current.summary; changed.pov = current.pov; changed.status = current.status; changed.targetWords = current.target_words; changed.detailedOutline = current.detailed_outline || '' }
+    if (expectedUpdatedRef.current) changed.expectedUpdatedAt = expectedUpdatedRef.current
+    const payload = changed
+    const snapshot = snapshotOf(current)
     const previousSnapshot = savedSnapshotRef.current
     savedSnapshotRef.current = snapshot
     try {
@@ -152,16 +165,28 @@ export function WritingStudio() {
       // 请求期间可能已切换/修改章节：只有同一章节且内容仍等于已保存快照时才合并
       if (draftRef.current?.id !== current.id) { savedSnapshotRef.current = previousSnapshot; return true }
       clearMirror(current.id)
+      if (next.updated_at) expectedUpdatedRef.current = next.updated_at
       setChapters((rows) => rows.map((row) => row.id === next.id ? { ...row, content: next.content } : row))
       setDraft((row) => row && row.id === next.id && snapshotOf(row) === snapshot ? { ...row, ...next } : row)
       errorSnapshotRef.current = ''
       setSaved(true); setAutosave('saved')
       window.setTimeout(() => setSaved(false), 1800)
       return true
-    } catch {
+    } catch (error) {
       savedSnapshotRef.current = previousSnapshot
       errorSnapshotRef.current = snapshot
       setAutosave('error')
+      const conflict = (error as { status?: number; conflict?: boolean; serverChapter?: Chapter }).status === 409
+      if (conflict) {
+        const serverChapter = (error as { serverChapter?: Chapter }).serverChapter
+        const choice = window.confirm('此章已在另一窗口修改并保存。\n\n确定 = 用我窗口的版本覆盖（服务器新版本将存入历史）；取消 = 载入服务器版本（我的修改留在本地草稿镜像里）。')
+        if (choice && serverChapter?.updated_at) {
+          expectedUpdatedRef.current = serverChapter.updated_at
+          return save()
+        }
+        if (serverChapter) { applyDraft(serverChapter); setAdoptionNotice('已载入另一窗口保存的版本；你的修改保存在本地草稿镜像中，可通过顶部提示恢复。') }
+        return true
+      }
       return false
     } finally {
       savingRef.current = false; setSaving(false)

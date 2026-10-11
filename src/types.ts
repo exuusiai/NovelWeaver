@@ -178,6 +178,10 @@ export interface Relation {
   label: string
   sentiment: string
   strength: number
+  valid_from?: string
+  valid_to?: string
+  canon_status?: string
+  evidence?: string
 }
 
 export interface ReviewIssue {

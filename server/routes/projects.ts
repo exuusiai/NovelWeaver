@@ -68,6 +68,8 @@ projectsRouter.delete('/api/projects/:projectId', (req, res) => {
 })
 
 // 项目快照恢复：接受完整导出 JSON，重建为**新项目**（原名 + 恢复日期），不覆盖现有数据。
+// 三条硬规则：(1) 全部业务表 ID 重建并重映射引用——原项目还在时不再 UNIQUE 冲突；
+// (2) 导出时 decodeRow 展开的 JSON 字段在入库前重新字符串化；(3) 章节标记（书签/关键/不导出）随行恢复。
 projectsRouter.post('/api/projects/restore', asyncRoute(async (req, res) => {
   const payload = req.body as Record<string, unknown> & { project?: Record<string, unknown>; schemaVersion?: number }
   const source = payload.project
@@ -75,36 +77,71 @@ projectsRouter.post('/api/projects/restore', asyncRoute(async (req, res) => {
   const newId = sql.id(); const stamp = sql.now()
   const restoredName = `${String(source.name)}（恢复 ${new Date().toLocaleDateString('zh-CN')}）`
   const remap = (rows: unknown): Array<Record<string, unknown>> => Array.isArray(rows) ? rows as Array<Record<string, unknown>> : []
-  const insertRows = (table: string, rows: Array<Record<string, unknown>>, withProjectId = true) => {
+
+  // 1) 逐表重建 ID；引用列在插入时查映射替换
+  const idMaps: Record<string, Map<string, string>> = { chapters: new Map(), volumes: new Map(), entities: new Map(), events: new Map(), plotlines: new Map(), story_outlines: new Map(), foreshadowing: new Map(), story_facts: new Map(), memory_chunks: new Map(), relations: new Map(), chapter_history: new Map(), chapter_outlines: new Map(), reviews: new Map(), generations: new Map(), imports: new Map(), analysis_runs: new Map() }
+  const regen = (table: string, oldId: unknown): string => {
+    const key = String(oldId || '')
+    const map = idMaps[table]
+    if (!map) return key
+    if (!map.has(key)) map.set(key, sql.id())
+    return map.get(key)!
+  }
+  // JSON 列：decodeRow 展开的对象/数组重新字符串化
+  const jsonColumns = new Set(['data', 'evidence', 'participants', 'knowledge', 'details', 'result', 'ai_suggestion', 'usage', 'context_snapshot', 'diagnostics', 'chapters', 'fingerprints', 'before', 'after', 'metrics', 'disagreements'])
+  const prepare = (table: string, row: Record<string, unknown>, refs: Record<string, string>) => {
+    const out: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(row)) {
+      let final = value
+      if (key === 'project_id') final = newId
+      else if (refs[key] && value) final = regen(refs[key], value)
+      if (jsonColumns.has(key) && (typeof final === 'object' && final !== null)) final = JSON.stringify(final)
+      out[key] = final
+    }
+    if (!out.id || !('id' in out)) {
+      // 无 id 列的表（chapter_marks/chapter_volume_bindings）以引用列定位，跳过 regen
+    }
+    return out
+  }
+  const insertRows = (table: string, rows: Array<Record<string, unknown>>, refs: Record<string, string> = {}, withId = true) => {
     for (const row of rows) {
-      const finalRow = withProjectId ? { ...row, project_id: newId } : row
-      const keys = Object.keys(finalRow)
+      const prepared = prepare(table, row, refs)
+      if (withId && prepared.id) prepared.id = regen(table, prepared.id)
+      const keys = Object.keys(prepared)
       if (!keys.length) continue
-      sql.run(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, ...keys.map((key) => (finalRow as Record<string, unknown>)[key]))
+      try {
+        sql.run(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, ...keys.map((key) => prepared[key]))
+      } catch (error) {
+        throw new Error(`恢复 ${table} 时失败：${(error as Error).message}（字段：${keys.join(',')}）`)
+      }
     }
   }
+
   db.transaction(() => {
     sql.run('INSERT INTO projects (id, name, genre, premise, status, word_goal, imported, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       newId, restoredName, String(source.genre || ''), String(source.premise || ''), String(source.status || 'active'), Number(source.word_goal) || 100000, source.imported ? 1 : 0, String(source.created_at || stamp), stamp)
+
     insertRows('volumes', remap(payload.volumes))
     insertRows('chapters', remap(payload.chapters))
-    sql.run(`INSERT INTO memory_fts (id, project_id, content, summary, keywords)
-      SELECT id, project_id, content, summary, keywords FROM memory_chunks WHERE project_id = ?`, newId)
-    insertRows('chapter_volume_bindings', remap(payload.chapterVolumeBindings), false)
+    insertRows('chapter_marks', remap(payload.chapterMarks), { chapter_id: 'chapters' }, false)
+    insertRows('chapter_volume_bindings', remap(payload.chapterVolumeBindings), { chapter_id: 'chapters', volume_id: 'volumes' }, false)
     insertRows('entities', remap(payload.entities))
     insertRows('plotlines', remap(payload.plotlines))
     insertRows('story_outlines', remap(payload.outlines))
-    insertRows('events', remap(payload.events))
-    insertRows('relations', remap(payload.relations))
-    insertRows('foreshadowing', remap(payload.foreshadowing))
-    insertRows('story_facts', remap(payload.facts))
-    insertRows('chapter_outlines', remap(payload.chapterOutlines))
-    insertRows('memory_chunks', remap(payload.memoryChunks))
+    insertRows('events', remap(payload.events), { chapter_id: 'chapters' })
+    insertRows('relations', remap(payload.relations), { from_entity_id: 'entities', to_entity_id: 'entities' })
+    insertRows('foreshadowing', remap(payload.foreshadowing), { setup_chapter_id: 'chapters', payoff_chapter_id: 'chapters' })
+    insertRows('story_facts', remap(payload.facts), { source_chapter_id: 'chapters' })
+    insertRows('chapter_outlines', remap(payload.chapterOutlines), { chapter_id: 'chapters', source_outline_id: 'story_outlines' }, false)
+    insertRows('memory_chunks', remap(payload.memoryChunks), { chapter_id: 'chapters' })
     insertRows('imports', remap(payload.imports))
     insertRows('reviews', remap(payload.reviews))
     insertRows('generations', remap(payload.generations))
-    insertRows('chapter_history', remap(payload.chapterHistory), false)
+    insertRows('chapter_history', remap(payload.chapterHistory), { chapter_id: 'chapters' })
     insertRows('analysis_runs', remap(payload.analysisRuns))
+    // 记忆 FTS 重建
+    sql.run(`INSERT INTO memory_fts (id, project_id, content, summary, keywords)
+      SELECT id, project_id, content, summary, keywords FROM memory_chunks WHERE project_id = ?`, newId)
   })()
   res.status(201).json({ id: newId, name: restoredName, schemaVersion: payload.schemaVersion ?? null, chapters: remap(payload.chapters).length })
 }))

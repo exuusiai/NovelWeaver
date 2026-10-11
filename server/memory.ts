@@ -350,7 +350,7 @@ export async function assembleContext(projectId: string, prompt: string, chapter
     ${uptoFilter ? 'AND (c.position IS NULL OR c.position <= ?)' : ''}
     ORDER BY CASE f.canon_status WHEN 'canon' THEN 0 ELSE 1 END, f.importance DESC LIMIT 120`,
     uptoFilter ? [projectId, currentPosition] : [projectId])
-  const allEntities = sql.all<Record<string, unknown>>(`SELECT type, name, summary, data, canon_status, confidence FROM entities
+  const allEntities = sql.all<Record<string, unknown>>(`SELECT id, type, name, summary, data, canon_status, confidence FROM entities
     WHERE project_id=? AND canon_status IN ('canon','candidate') ORDER BY confidence DESC LIMIT 200`, projectId)
   const plotlines = sql.all<Record<string, unknown>>('SELECT name, type, summary, status FROM plotlines WHERE project_id=? AND status IN (?, ?)', projectId, 'active', 'candidate')
   const allEvents = sql.all<Record<string, unknown>>(`SELECT e.title, e.summary, e.story_time, e.status, c.position
@@ -388,6 +388,16 @@ export async function assembleContext(projectId: string, prompt: string, chapter
   // 一跳关系邻居：多跳问题（"A 的哥哥的敌人"）无法靠词法/向量直接命中，
   // 从 relations 表为已入选实体补一跳图结构上下文；已在资料卡中的邻居跳过。
   const selectedIds = entities.map((item) => String(item.row.id))
+  // 作者在关系图上画的关系必须进入生成依据：入选资料卡之间的直接关系显式注入，
+  // 并作为独立条目出现在上下文报告中（写手能看到 AI 到底知不知道这层关系）
+  let selectedRelations: Array<{ fromName: string; toName: string; label: string; type: string; sentiment: string; strength: number; evidence: string }> = []
+  if (selectedIds.length >= 2) {
+    const placeholders = selectedIds.map(() => '?').join(',')
+    selectedRelations = sql.all(`SELECT f.name fromName, t.name toName, r.label, r.type, r.sentiment, r.strength, COALESCE(r.evidence,'') evidence
+      FROM relations r JOIN entities f ON f.id=r.from_entity_id JOIN entities t ON t.id=r.to_entity_id
+      WHERE r.project_id=? AND r.from_entity_id IN (${placeholders}) AND r.to_entity_id IN (${placeholders})
+      ORDER BY CASE r.canon_status WHEN 'canon' THEN 0 ELSE 1 END, r.strength DESC LIMIT 12`, [projectId, ...selectedIds, ...selectedIds])
+  }
   let neighbors: Array<{ name: string; entity_type: string; summary: string; canon_status: string; rel_type: string; rel_label: string; sentiment: string; strength: number; from_name: string }> = []
   if (selectedIds.length) {
     const placeholders = selectedIds.map(() => '?').join(',')
@@ -417,6 +427,8 @@ export async function assembleContext(projectId: string, prompt: string, chapter
     ...(() => { const macro = buildMacroMemory(projectId, scope === 'upto' ? currentPosition : undefined); return macro ? [make('macro', '全书概览', macro, 90)] : [] })(),
     ...(chapter ? [make('chapter', `当前章节：${chapter.title}`, `【当前章节】${chapter.title}\n视角：${chapter.pov}\n摘要：${chapter.summary}\n正文末尾：${String(chapter.content).slice(-1800)}`, 98)] : []),
     ...(outlineText ? [make('outline', '本章细纲', `【本章细纲】${outlineText}`, 96)] : []),
+    ...selectedRelations.map((rel) => make('relation', `关系：${rel.fromName}→${rel.toName}`,
+      `【人物关系/${rel.sentiment}】${rel.fromName} —${rel.label || rel.type}→ ${rel.toName}（强度 ${rel.strength}${rel.evidence ? `；依据：${rel.evidence.slice(0, 60)}` : ''}）。生成时必须遵守这层关系。`, 76, Math.min(20, rel.strength / 5))),
     ...states.map((state) => make('state', `人物状态：${state.name}`,
       `【人物状态】${state.name}：最近事件「${state.lastEvent}」${state.lastTime ? `（${state.lastTime}）` : ''}${state.lastLocation ? `@${state.lastLocation}` : ''}；累计参与 ${state.eventCount} 个事件。此后未再出场，不要让其知晓之后发生的事。`, 92)),
     ...(volume ? [make('volume', `所属卷：${volume.title}`, `【所属卷】${volume.title}\n卷摘要：${volume.summary || '尚未填写'}`, 88)] : []),

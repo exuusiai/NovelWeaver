@@ -117,11 +117,56 @@ describe('离线全链路冒烟', () => {
     expect(patched.status).toBe(200)
   })
 
-  it('稿件可导出', async () => {
+  it('关系进入生成依据，且可确认/驳回', async () => {
+    // 建两个实体 + 一条关系
+    const a = await json<{ id: string }>('POST', `/api/projects/${projectId}/entities`, { type: 'character', name: '沈砚', summary: '主角。', data: {}, canonStatus: 'canon' })
+    const b = await json<{ id: string }>('POST', `/api/projects/${projectId}/entities`, { type: 'character', name: '林月', summary: '女主。', data: {}, canonStatus: 'canon' })
+    await json('POST', `/api/projects/${projectId}/relations`, { fromEntityId: a.data.id, toEntityId: b.data.id, type: 'association', label: '暗恋', sentiment: 'positive', strength: 80 })
+    const context = await json<{ report: { included: Array<{ kind: string; label: string }> } }>('POST', '/api/ai/context', { projectId, prompt: '沈砚和林月之间发生了什么？写下一章。' })
+    expect(context.status).toBe(200)
+    expect(context.data.report.included.some((item) => item.kind === 'relation' && item.label.includes('沈砚'))).toBe(true)
+    // 确认/驳回路由
+    const rels = await json<Array<{ id: string }>>('GET', `/api/projects/${projectId}/graph`)
+    const rel = (rels.data as { relations: Array<{ id: string }> }).relations[0]
+    const patchedRel = await json<{ canon_status: string }>('PATCH', `/api/relations/${rel.id}`, { canonStatus: 'canon' })
+    expect(patchedRel.data.canon_status).toBe('canon')
+  })
+
+  it('并发保存冲突返回 409 且不覆盖', async () => {
+    const chapters = await json<Array<{ id: string; updated_at: string }>>('GET', `/api/projects/${projectId}/chapters`)
+    const id = chapters.data[0].id
+    // 窗口 A 保存（updated_at 前移）
+    await json('PATCH', `/api/chapters/${id}`, { content: '窗口A的新正文。'.repeat(20) })
+    // 窗口 B 携带过期 expectedUpdatedAt 提交 → 应 409
+    const stale = await fetch(`${base}/api/chapters/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pov: '林雾', expectedUpdatedAt: chapters.data[0].updated_at }) })
+    expect(stale.status).toBe(409)
+    const body = await stale.json() as { conflict?: boolean; serverChapter?: { content: string } }
+    expect(body.conflict).toBe(true)
+    expect(body.serverChapter?.content).toContain('窗口A的新正文')
+  })
+
+  it('备份恢复为独立新项目且保留章节标记', async () => {
+    const chapters = await json<Array<{ id: string }>>('GET', `/api/projects/${projectId}/chapters`)
+    await json('PATCH', `/api/chapters/${chapters.data[0].id}/mark`, { bookmarked: true, excluded: true, importance: 'critical' })
+    const exportBody = await fetch(`${base}/api/projects/${projectId}/export`).then((r) => r.json()) as Record<string, unknown>
+    const restored = await json<{ id: string; name: string; chapters: number }>('POST', '/api/projects/restore', exportBody)
+    expect(restored.status).toBe(201)
+    expect(restored.data.chapters).toBeGreaterThan(0)
+    // 恢复后的项目：原项目仍在，标记保留
+    const list = await json<Array<{ id: string; name: string }>>('GET', '/api/projects')
+    expect(list.data.some((item) => item.name.includes('恢复'))).toBe(true)
+    const restoredChapters = await json<Array<{ id: string; bookmarked: number; excluded: number; importance: string }>>('GET', `/api/projects/${restored.data.id}/chapters`)
+    const marked = restoredChapters.data.find((row) => row.importance === 'critical')
+    expect(marked).toBeTruthy()
+    expect(marked!.excluded).toBe(1)
+    expect(marked!.bookmarked).toBe(1)
+  })
+
+  it('稿件可导出（excluded 章不进入稿件）', async () => {
     const res = await fetch(`${base}/api/projects/${projectId}/export/manuscript?format=txt`)
     expect(res.status).toBe(200)
     const text = await res.text()
-    expect(text).toContain('第一章')
+    expect(text).toContain('第二章')
     expect(text.replace(/\s/g, '').length).toBeGreaterThan(200)
   })
 })

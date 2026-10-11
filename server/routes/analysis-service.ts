@@ -148,8 +148,15 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
     for (const relation of result.relations) {
       const from = entityIdByName.get(normalized(relation.from)); const to = entityIdByName.get(normalized(relation.to))
       if (!from || !to || from === to) continue
-      const exists = sql.get('SELECT id FROM relations WHERE project_id=? AND from_entity_id=? AND to_entity_id=? AND type=?', projectId, from, to, relation.type)
-      if (!exists) sql.run('INSERT INTO relations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', sql.id(), projectId, from, to, relation.type, relation.label, relation.sentiment, Math.round(relation.strength), '', '', stamp)
+      const exists = sql.get<{ id: string; canon_status: string }>('SELECT id, canon_status FROM relations WHERE project_id=? AND from_entity_id=? AND to_entity_id=? AND type=?', projectId, from, to, relation.type)
+      if (exists) {
+        // 同型关系再次提取到：更新描述与证据（"勉强合作→生死之交"应反映最新），
+        // 但作者已确认的正史关系不被模型结果改写
+        if (exists.canon_status !== 'canon') sql.run('UPDATE relations SET label=?, sentiment=?, strength=?, evidence=?, updated_at=? WHERE id=?', relation.label, relation.sentiment, Math.round(relation.strength), relation.evidence || '', stamp, exists.id)
+      } else {
+        sql.run('INSERT INTO relations (id, project_id, from_entity_id, to_entity_id, type, label, sentiment, strength, valid_from, valid_to, created_at, canon_status, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          sql.id(), projectId, from, to, relation.type, relation.label, relation.sentiment, Math.round(relation.strength), '', '', stamp, 'candidate', relation.evidence || '')
+      }
     }
     const failedChapterIds = new Set(result.failures.flatMap((failure) => failure.chapterIds))
     for (const chapter of chapters) {
