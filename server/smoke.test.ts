@@ -65,6 +65,25 @@ describe('离线全链路冒烟', () => {
     expect(again.data.detailed_outline).toContain('渗水地图')
   })
 
+  it('历史快照含细纲并随恢复同步', async () => {
+    const chapters = await json<Array<{ id: string }>>('GET', `/api/projects/${projectId}/chapters`)
+    const id = chapters.data[0].id
+    // v1：正文 A + 细纲 X → 保存
+    await json('PATCH', `/api/chapters/${id}`, { content: '旧正文：妹妹还活着，坐在门边。'.repeat(10), detailedOutline: '旧细纲：妹妹活着。' })
+    // v2：正文 B + 细纲 Y → 保存（触发历史）
+    await json('PATCH', `/api/chapters/${id}`, { content: '新正文：妹妹已死，来信是圈套。'.repeat(10), detailedOutline: '新细纲：妹妹死亡，来信是圈套。' })
+    const history = await json<Array<{ id: string; detailed_outline?: string }>>('GET', `/api/chapters/${id}/history`)
+    expect(history.status).toBe(200)
+    expect(history.data.length).toBeGreaterThanOrEqual(1)
+    expect(history.data.some((row) => row.detailed_outline?.includes('旧细纲'))).toBe(true)
+    // 恢复最早的版本：正文与细纲都应回到旧版
+    const oldest = history.data.find((row) => row.detailed_outline?.includes('旧细纲'))!
+    const restored = await json<{ detailed_outline?: string; content: string }>('POST', `/api/chapters/${id}/history/${oldest.id}/restore`, {})
+    expect(restored.status).toBe(200)
+    expect(restored.data.content).toContain('妹妹还活着')
+    expect(restored.data.detailed_outline).toContain('旧细纲')
+  })
+
   it('章节与记忆已写入，检索可命中', async () => {
     const chapters = await json<Array<{ id: string; title: string; content: string; summary: string }>>('GET', `/api/projects/${projectId}/chapters`)
     expect(chapters.data.length).toBeGreaterThanOrEqual(2)

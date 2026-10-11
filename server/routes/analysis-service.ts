@@ -40,6 +40,7 @@ export function analysisQuality(projectId: string) {
       truncationFailures: failedJobs.filter((row) => /截断|长度上限|truncat|max.?token/i.test(`${row.message} ${row.error}`)).length,
       failedJobs: failedJobs.length,
       staleChapterCount: staleChapters.length,
+      analyzed: hasAnalysis > 0,
       staleChapters: staleChapters.slice(0, 20), details,
     }, failedJobs,
   }

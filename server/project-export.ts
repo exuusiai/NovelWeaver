@@ -37,8 +37,11 @@ export interface ManuscriptChapterRow { id: string; title: string; content: stri
 // Volume-grouped chapters in reading order; unbound chapters go to a trailing group.
 export function assembleManuscriptVolumes(projectId: string) {
   const volumeRows = sql.all<{ id: string; title: string }>('SELECT id, title FROM volumes WHERE project_id = ? ORDER BY order_index', projectId)
+  // excluded=保留但不导出（备用结局等）：内容留在项目里，稿件导出排除
   const chapterRows = sql.all<ManuscriptChapterRow>(`SELECT c.id, c.title, c.content, b.volume_id, b.order_index, c.position FROM chapters c
-    LEFT JOIN chapter_volume_bindings b ON b.chapter_id = c.id WHERE c.project_id = ?`, projectId)
+    LEFT JOIN chapter_marks m ON m.chapter_id = c.id
+    LEFT JOIN chapter_volume_bindings b ON b.chapter_id = c.id
+    WHERE c.project_id = ? AND COALESCE(m.excluded, 0) = 0`, projectId)
   const volumes = volumeRows.map((volume) => ({
     title: volume.title,
     chapters: chapterRows

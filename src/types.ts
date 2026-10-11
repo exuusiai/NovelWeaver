@@ -35,6 +35,8 @@ export interface Chapter {
   updated_at: string
   content_hash?: string
   analyzed_hash?: string
+  excluded?: number
+  outline_source?: string
   bookmarked: number
   importance: 'normal' | 'important' | 'critical'
   mark_note: string
@@ -53,6 +55,8 @@ export interface ChapterHistory {
   word_count: number
   preview: string
   created_at: string
+  fullContent?: string
+  detailed_outline?: string
 }
 
 export interface PrecheckIssue {

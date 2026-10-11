@@ -73,9 +73,12 @@ export function rebuildChapterMemory(projectId: string, chapterId: string, title
 export const CHAPTER_HISTORY_LIMIT = 50
 
 export function saveChapterHistory(chapter: { id: string; project_id: string; title: string; content: string; summary: string }) {
-  sql.run('INSERT INTO chapter_history VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  // 历史快照连同当时细纲一起存：恢复旧稿时正文与细纲回到同一版本，
+  // 不再出现"旧正文 + 新细纲"的混合状态
+  const outline = sql.get<{ content: string }>('SELECT content FROM chapter_outlines WHERE chapter_id=?', chapter.id)?.content || ''
+  sql.run('INSERT INTO chapter_history (id, chapter_id, project_id, title, content, summary, word_count, created_at, detailed_outline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     sql.id(), chapter.id, chapter.project_id, chapter.title, chapter.content, chapter.summary,
-    chapter.content.replace(/\s/g, '').length, sql.now())
+    chapter.content.replace(/\s/g, '').length, sql.now(), outline)
   sql.run(`DELETE FROM chapter_history WHERE chapter_id = ? AND id NOT IN
     (SELECT id FROM chapter_history WHERE chapter_id = ? ORDER BY created_at DESC LIMIT ?)`,
     chapter.id, chapter.id, CHAPTER_HISTORY_LIMIT)
@@ -99,10 +102,29 @@ export function bindChapterToVolume(projectId: string, chapterId: string, volume
 export function chapterSelect(where: string) {
   return `SELECT c.*, COALESCE(m.bookmarked, 0) AS bookmarked, COALESCE(m.importance, 'normal') AS importance,
     COALESCE(m.note, '') AS mark_note, COALESCE(o.content, '') AS detailed_outline,
-    COALESCE(o.status, '') AS outline_status, b.volume_id, v.title AS volume_title, b.order_index AS volume_order_index
+    COALESCE(o.status, '') AS outline_status, COALESCE(o.source_outline_id, '') AS outline_source,
+    COALESCE(m.excluded, 0) AS excluded, b.volume_id, v.title AS volume_title, b.order_index AS volume_order_index
     FROM chapters c LEFT JOIN chapter_marks m ON m.chapter_id = c.id
     LEFT JOIN chapter_outlines o ON o.chapter_id=c.id
     LEFT JOIN chapter_volume_bindings b ON b.chapter_id=c.id LEFT JOIN volumes v ON v.id=b.volume_id ${where}`
+}
+
+// 权威阅读顺序重算：卷（按 order_index）内章节（按 order_index）依次编号，
+// 未分卷章节排最后。目录、上一章/下一章、AI"截至本章"、导出全部读全局 position，
+// 移卷后调用本函数即可让四处顺序保持一致。
+export function reorderPositionsByVolume(projectId: string) {
+  const rows = sql.all<{ chapter_id: string; volume_id: string | null; order_index: number }>(`SELECT b.chapter_id, b.volume_id, b.order_index FROM chapter_volume_bindings b
+    JOIN chapters c ON c.id = b.chapter_id WHERE c.project_id = ?`, projectId)
+  const bound = new Map(rows.map((row) => [row.chapter_id, row]))
+  const volumes = sql.all<{ id: string }>('SELECT id FROM volumes WHERE project_id = ? ORDER BY order_index', projectId)
+  const unbound = sql.all<{ id: string }>(`SELECT id FROM chapters WHERE project_id = ? AND id NOT IN (SELECT chapter_id FROM chapter_volume_bindings) ORDER BY position, created_at`, projectId)
+  let position = 0
+  for (const volume of volumes) {
+    const chaptersInVolume = rows.filter((row) => row.volume_id === volume.id).sort((a, b) => a.order_index - b.order_index)
+    for (const row of chaptersInVolume) { sql.run('UPDATE chapters SET position=? WHERE id=?', position, row.chapter_id); position += 1 }
+  }
+  for (const row of unbound) { sql.run('UPDATE chapters SET position=? WHERE id=?', position, row.id); position += 1 }
+  void bound
 }
 
 export function normalizeChapterPositions(projectId: string) {

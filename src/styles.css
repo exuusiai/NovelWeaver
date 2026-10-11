@@ -1032,3 +1032,12 @@ h1, h2, h3, p { margin: 0; }
 @media (max-width: 640px) {
   .chapter-nav-mobile .icon-button[title="新建章节"], .chapter-nav-mobile button[aria-label="新建章节"] { display: grid; }
 }
+
+/* 历史版本对比 */
+.history-list article { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; }
+.history-actions { display: grid; gap: 4px; }
+.history-diff { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px; background: #fafaf7; }
+.history-diff p { margin: 3px 0; font-size: 11px; line-height: 1.6; }
+.history-diff .diff-hint { color: var(--faint); font-size: 9px; margin-bottom: 6px; }
+.history-diff .diff-del { color: #963d34; background: #f6e5e3; border-radius: 3px; padding: 2px 6px; }
+.history-diff .diff-add { color: #12645e; background: var(--teal-soft); border-radius: 3px; padding: 2px 6px; }

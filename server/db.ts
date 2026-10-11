@@ -290,6 +290,8 @@ for (const statement of [
   'ALTER TABLE projects ADD COLUMN import_revision INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE analysis_jobs ADD COLUMN import_revision INTEGER NOT NULL DEFAULT -1',
   "ALTER TABLE memory_chunks ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE chapter_history ADD COLUMN detailed_outline TEXT NOT NULL DEFAULT ''",
+  'ALTER TABLE chapter_marks ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0',
 ]) {
   try { db.exec(statement) } catch { /* column already exists */ }
 }

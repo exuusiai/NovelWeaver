@@ -5,7 +5,7 @@ import { chapterContentFingerprint } from '../importer.ts'
 import { getModelStatus, summarizeWithModel } from '../ai.ts'
 import { precheckChapter } from '../review.ts'
 import {
-  asyncRoute, bindChapterToVolume, chapterSelect, contentHash, ensureDefaultVolume, normalizeChapterPositions, rebuildChapterMemory,
+  asyncRoute, bindChapterToVolume, chapterSelect, contentHash, ensureDefaultVolume, normalizeChapterPositions, reorderPositionsByVolume, rebuildChapterMemory,
   removeChapterWithMemory, requireProject, saveChapterHistory,
 } from './helpers.ts'
 
@@ -66,7 +66,7 @@ chaptersRouter.post('/api/projects/:projectId/chapters', (req, res) => {
     if (after) sql.run('UPDATE chapters SET position=position+1 WHERE project_id=? AND position>=?', req.params.projectId, position)
     sql.run(`INSERT INTO chapters (id, project_id, title, content, position, status, summary, pov, target_words, created_at, updated_at, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chapterId, req.params.projectId, body.title,
       body.content, position, 'draft', body.summary, body.pov, body.targetWords, stamp, stamp, contentHash(body.content))
-    sql.run('INSERT INTO chapter_marks VALUES (?, ?, ?, ?, ?, ?)', chapterId, req.params.projectId, 0, 'normal', '', stamp)
+    sql.run('INSERT INTO chapter_marks (chapter_id, project_id, bookmarked, importance, note, updated_at) VALUES (?, ?, ?, ?, ?, ?)', chapterId, req.params.projectId, 0, 'normal', '', stamp)
     const afterBinding = body.afterChapterId ? sql.get<{ volume_id: string }>('SELECT volume_id FROM chapter_volume_bindings WHERE chapter_id=?', body.afterChapterId) : undefined
     bindChapterToVolume(req.params.projectId, chapterId, afterBinding?.volume_id)
     if (chapterContentFingerprint(body.content)) {
@@ -81,7 +81,10 @@ chaptersRouter.patch('/api/chapters/:chapterId', (req, res) => {
   const current = sql.get<Record<string, unknown>>('SELECT * FROM chapters WHERE id = ?', req.params.chapterId)
   if (!current) return res.status(404).json({ error: '章节不存在。' })
   const body = z.object({ title: z.string().optional(), content: z.string().optional(), summary: z.string().optional(), pov: z.string().optional(), status: z.string().optional(), targetWords: z.number().int().positive().optional(), position: z.number().int().nonnegative().optional(), detailedOutline: z.string().optional() }).parse(req.body)
-  if (body.content !== undefined && chapterContentFingerprint(String(current.content)) !== chapterContentFingerprint(body.content)) {
+  const outlineBefore = sql.get<{ content: string }>('SELECT content FROM chapter_outlines WHERE chapter_id=?', req.params.chapterId)?.content ?? ''
+  const outlineChanged = body.detailedOutline !== undefined && body.detailedOutline !== outlineBefore
+  // 正文或细纲变化都留快照：细纲单独改动同样可从历史恢复
+  if ((body.content !== undefined && chapterContentFingerprint(String(current.content)) !== chapterContentFingerprint(body.content)) || outlineChanged) {
     saveChapterHistory({ id: String(current.id), project_id: String(current.project_id), title: String(current.title), content: String(current.content), summary: String(current.summary ?? '') })
   }
   const contentChanged = body.content !== undefined && body.content !== current.content
@@ -114,21 +117,27 @@ chaptersRouter.get('/api/chapters/:chapterId/history', (req, res) => {
   const chapter = sql.get<{ project_id: string }>('SELECT project_id FROM chapters WHERE id = ?', req.params.chapterId)
   if (!chapter) return res.status(404).json({ error: '章节不存在。' })
   const rows = sql.all<{ id: string; title: string; summary: string; word_count: number; content: string; created_at: string }>(
-    'SELECT id, title, summary, word_count, content, created_at FROM chapter_history WHERE chapter_id = ? ORDER BY created_at DESC', req.params.chapterId)
-  res.json(rows.map(({ content, ...row }) => ({ ...row, preview: content.replace(/\s+/g, ' ').slice(0, 120) })))
+    'SELECT id, title, summary, word_count, content, created_at, detailed_outline FROM chapter_history WHERE chapter_id = ? ORDER BY created_at DESC', req.params.chapterId)
+  res.json(rows.map(({ content, ...row }) => ({ ...row, preview: content.replace(/\s+/g, ' ').slice(0, 120), fullContent: content })))
 })
 
 chaptersRouter.post('/api/chapters/:chapterId/history/:historyId/restore', (req, res) => {
   const chapter = sql.get<Record<string, unknown>>('SELECT * FROM chapters WHERE id = ?', req.params.chapterId)
   if (!chapter) return res.status(404).json({ error: '章节不存在。' })
-  const version = sql.get<{ id: string; title: string; content: string; summary: string }>(
-    'SELECT id, title, content, summary FROM chapter_history WHERE id = ? AND chapter_id = ?', req.params.historyId, req.params.chapterId)
+  const version = sql.get<{ id: string; title: string; content: string; summary: string; detailed_outline?: string }>(
+    'SELECT id, title, content, summary, detailed_outline FROM chapter_history WHERE id = ? AND chapter_id = ?', req.params.historyId, req.params.chapterId)
   if (!version) return res.status(404).json({ error: '历史版本不存在。' })
   const stamp = sql.now()
   db.transaction(() => {
     saveChapterHistory({ id: String(chapter.id), project_id: String(chapter.project_id), title: String(chapter.title), content: String(chapter.content), summary: String(chapter.summary ?? '') })
     sql.run(`UPDATE chapters SET title=?, content=?, summary=?, content_hash=?, analyzed_hash='', updated_at=? WHERE id=?`,
       version.title, version.content, version.summary || String(chapter.summary ?? ''), contentHash(version.content), stamp, req.params.chapterId)
+    // 细纲随正文回到同一版本：快照里有细纲才覆盖（老快照无细纲时保持现状）
+    if (version.detailed_outline) {
+      const existingOutline = sql.get<{ chapter_id: string }>('SELECT chapter_id FROM chapter_outlines WHERE chapter_id=?', req.params.chapterId)
+      if (existingOutline) sql.run('UPDATE chapter_outlines SET content=?, updated_at=? WHERE chapter_id=?', version.detailed_outline, stamp, req.params.chapterId)
+      else sql.run('INSERT INTO chapter_outlines (project_id, chapter_id, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', chapter.project_id, req.params.chapterId, version.detailed_outline, 'active', stamp, stamp)
+    }
     // 恢复旧稿 = 正文回到旧版本：记忆重建 + analyzed_hash 清空（分析结果视为过期）
     rebuildChapterMemory(String(chapter.project_id), req.params.chapterId, version.title, version.content, version.summary)
     sql.run('UPDATE projects SET updated_at=? WHERE id=?', stamp, chapter.project_id)
@@ -151,11 +160,11 @@ chaptersRouter.patch('/api/chapters/:chapterId/outline', (req, res) => {
 chaptersRouter.patch('/api/chapters/:chapterId/mark', (req, res) => {
   const current = sql.get<{ id: string; project_id: string }>('SELECT id, project_id FROM chapters WHERE id = ?', req.params.chapterId)
   if (!current) return res.status(404).json({ error: '章节不存在。' })
-  const body = z.object({ bookmarked: z.boolean().optional(), importance: z.enum(['normal', 'important', 'critical']).optional(), note: z.string().max(500).optional() }).parse(req.body)
-  const existing = sql.get<{ bookmarked: number; importance: string; note: string }>('SELECT bookmarked, importance, note FROM chapter_marks WHERE chapter_id = ?', current.id)
-  sql.run(`INSERT INTO chapter_marks (chapter_id, project_id, bookmarked, importance, note, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(chapter_id) DO UPDATE SET bookmarked=excluded.bookmarked, importance=excluded.importance, note=excluded.note, updated_at=excluded.updated_at`,
-  current.id, current.project_id, body.bookmarked === undefined ? existing?.bookmarked ?? 0 : Number(body.bookmarked), body.importance ?? existing?.importance ?? 'normal', body.note ?? existing?.note ?? '', sql.now())
+  const body = z.object({ bookmarked: z.boolean().optional(), importance: z.enum(['normal', 'important', 'critical']).optional(), note: z.string().max(500).optional(), excluded: z.boolean().optional() }).parse(req.body)
+  const existing = sql.get<{ bookmarked: number; importance: string; note: string; excluded: number }>('SELECT bookmarked, importance, note, excluded FROM chapter_marks WHERE chapter_id = ?', current.id)
+  sql.run(`INSERT INTO chapter_marks (chapter_id, project_id, bookmarked, importance, note, excluded, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(chapter_id) DO UPDATE SET bookmarked=excluded.bookmarked, importance=excluded.importance, note=excluded.note, excluded=excluded.excluded, updated_at=excluded.updated_at`,
+  current.id, current.project_id, body.bookmarked === undefined ? existing?.bookmarked ?? 0 : Number(body.bookmarked), body.importance ?? existing?.importance ?? 'normal', body.note ?? existing?.note ?? '', body.excluded === undefined ? existing?.excluded ?? 0 : Number(body.excluded), sql.now())
   res.json(sql.get(chapterSelect('WHERE c.id = ?'), current.id))
 })
 
@@ -167,6 +176,8 @@ chaptersRouter.patch('/api/chapters/:chapterId/volume', (req, res) => {
   if (!volume || volume.project_id !== chapter.project_id) return res.status(400).json({ error: '目标卷无效。' })
   bindChapterToVolume(chapter.project_id, req.params.chapterId, body.volumeId)
   if (body.orderIndex !== undefined) sql.run('UPDATE chapter_volume_bindings SET order_index=? WHERE chapter_id=?', body.orderIndex, req.params.chapterId)
+  // 移卷后按卷序重算全局 position：目录/导出/前后章/AI 截至本章保持同一阅读顺序
+  reorderPositionsByVolume(chapter.project_id)
   res.json(sql.get(chapterSelect('WHERE c.id=?'), req.params.chapterId))
 })
 
