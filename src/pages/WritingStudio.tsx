@@ -13,11 +13,12 @@ const cleanGeneratedProse = (output: string) => output
   .replace(/[ \t]{2,}/g, ' ')
 const variantLabel = (index: number) => `版本 ${String.fromCharCode(65 + index)}`
 
+// 只剥离本地规则引擎的整段元数据说明——用锚定首尾的白名单，绝不用宽泛正则匹配正文。
+// 之前 "本地/以上是" 的模糊匹配曾把 "他是本地人" 和 "以上是我知道的全部" 当产品说明删掉。
+const localModeDisclaimer = /^>\s*本(?:地|地模式|地规则)模式只生成[\s\S]*?(?:配置模型 API 后[\s\S]*?完整草稿。|具体内容。)/gm
 const cleanAdoptable = (output: string) => cleanGeneratedProse(output)
-  .replace(/^>.*$/gm, '')
-  .replace(/（?本(?:地|地模式|演示)[^）]*）?/g, '')
-  .replace(/配置模型[^。\n]*。?/g, '')
-  .replace(/以上是[^。\n]*。?/g, '')
+  .replace(localModeDisclaimer, '')
+  .replace(/^>\s*本(?:地|地模式)模式[\s\S]*?(?:配置模型后[^\n]*|\n\n)/gm, '')
   .trim()
 
 export function WritingStudio() {
@@ -297,7 +298,6 @@ export function WritingStudio() {
     setActionScope(selection ? `${action.scope}·选中「${selection.slice(0, 24)}…」` : action.scope)
   }
   const [actionScope, setActionScope] = useState('')
-  const [selection, setSelection] = useState('')
 
   const generate = async () => {
     if (!draft) return
@@ -402,43 +402,94 @@ export function WritingStudio() {
   // 采纳后自动预检：对比采纳前后的规则检查差异，把"这次生成引入了什么问题"变成即时反馈
   // 采纳状态按 generationId 记录（唯一身份），不按版本索引——切章/丢弃候选不会误标
   const adoptedIdsRef = useRef<Set<string>>(new Set())
-  const undoAdoptRef = useRef<{ chapterId: string; inserted: string } | null>(null)
-  // 撤销：只从正文中移除本次插入的文本块。如果作者已在插入区域内修改（找不到原文），
-  // 不静默恢复整篇旧稿，而是提示差异让作者决定。
+  // 撤销记录：插入文本 + 前后锚文本 + 章节与候选 ID。
+  // 多处匹配同一段文字时（原稿已有相同段落），indexOf 会定位到错误位置——
+  // 此时用锚文本确认插入点，仍不确定就交给作者手动处理。
+  const undoAdoptRef = useRef<{ chapterId: string; inserted: string; preAnchor: string; postAnchor: string; generationId?: string } | null>(null)
+
   const undoAdoption = () => {
     const record = undoAdoptRef.current
     if (!record || !draft || draft.id !== record.chapterId) { setAdoptionNotice('没有可撤销的采纳（或已切换章节）。'); return }
-    const index = draft.content.indexOf(record.inserted)
-    if (index < 0) {
-      setAdoptionNotice('插入的内容已被修改，无法自动定位撤销。请在编辑器中手动删除该段落（可从历史版本对照）。')
+    // 用前锚定位插入点：插入时记录了插入位置前的最后 30 字
+    const anchorIndex = record.preAnchor ? draft.content.lastIndexOf(record.preAnchor) : -1
+    let insertStart: number
+    if (anchorIndex >= 0) {
+      insertStart = anchorIndex + record.preAnchor.length
+      // 跳过锚与插入块之间的分隔空白
+      while (insertStart < draft.content.length && '\n '.includes(draft.content[insertStart])) insertStart += 1
+    } else {
+      insertStart = draft.content.indexOf(record.inserted)
+    }
+    if (insertStart < 0 || draft.content.slice(insertStart, insertStart + record.inserted.length) !== record.inserted) {
+      setAdoptionNotice('插入的内容已被修改或找不到精确位置，无法自动撤销。请在编辑器中手动删除该段（可对照历史版本）。')
       return
     }
-    const before = draft.content.slice(0, index).replace(/\n\n$/, '')
-    const after = draft.content.slice(index + record.inserted.length)
+    const before = draft.content.slice(0, insertStart).replace(/\n\n$/, '')
+    const after = draft.content.slice(insertStart + record.inserted.length)
     setDraft({ ...draft, content: `${before}${after ? `\n\n${after}` : ''}` })
     undoAdoptRef.current = null
-    // 撤销后允许重新采纳该版本
-    if (currentResult?.generationId) adoptedIdsRef.current.delete(currentResult.generationId)
+    // 撤销的是 record.generationId（记录时保存的），不是当前切换到的版本
+    if (record.generationId) adoptedIdsRef.current.delete(record.generationId)
     setAdoptionNotice('已撤销本次插入（只移除追加的文本，你后来写的内容保留）。请记得保存。')
   }
+
+  // ========== ⑤ 局部替换：重写对白/压缩描写的结果替换选区而非追加 ==========
+  const [selection, setSelection] = useState('')
+  const selectionRef = useRef<{ chapterId: string; text: string; start: number; end: number } | null>(null)
+  const captureSelection = (target: HTMLTextAreaElement) => {
+    const text = target.value.slice(target.selectionStart, target.selectionEnd)
+    if (text.trim().length >= 20 && draftRef.current) {
+      setSelection(text.trim())
+      selectionRef.current = { chapterId: draftRef.current.id, text: text.trim(), start: target.selectionStart, end: target.selectionEnd }
+    } else {
+      setSelection('')
+      selectionRef.current = null
+    }
+  }
+  const replaceSelection = () => {
+    const record = selectionRef.current
+    if (!record || !draft || record.chapterId !== draft.id) { setAdoptionNotice('选区已过期（可能已切换章节或修改正文），请重新选中后重试。'); return }
+    const cleaned = cleanAdoptable(currentResult?.output || '')
+    if (!cleaned.trim()) return
+    // 校验选区文本仍在正文中（正文可能已变）
+    const current = draftRef.current?.content || draft.content
+    if (current.slice(record.start, record.end) !== record.text) {
+      setAdoptionNotice('选区对应的原文已修改，无法自动替换。请手动用生成结果替换。')
+      return
+    }
+    setDraft((row) => {
+      if (!row || row.id !== record.chapterId) return row
+      const content = row.content.slice(0, record.start) + cleaned + row.content.slice(record.end)
+      return { ...row, content }
+    })
+    selectionRef.current = null
+    setSelection('')
+    setAdoptionNotice('已替换选中段落。请检查改写结果并保存。')
+  }
+
   const appendResult = async () => {
     if (!draft || !currentResult?.output.trim()) return
     if (currentResult.chapterId && currentResult.chapterId !== draft.id) { setAdoptionNotice('该结果属于其他章节，已阻止追加——请切换回原章节采纳。'); return }
     if (currentResult.task === 'chapter_outline') { setAdoptionNotice('这是细纲结果，请点「放入本章细纲」。'); return }
     if (currentResult.generationId && adoptedIdsRef.current.has(currentResult.generationId)) { setAdoptionNotice('该版本已追加过；如需再次插入请先生成新版本。'); return }
+    // 预检完成后基于 draftRef.current（最新正文）插入，而不是点击时捕获的 draft.content
     const before = await api<{ issues: Array<{ title: string }> }>(`/api/chapters/${draft.id}/precheck`).catch(() => ({ issues: [] }))
+    const latest = draftRef.current
+    if (!latest || latest.id !== draft.id) { setAdoptionNotice('章节已切换，采纳中止。'); return }
     const inserted = cleanAdoptable(currentResult.output)
-    const merged = `${draft.content}${draft.content ? '\n\n' : ''}${inserted}`
-    // 采纳走普通保存链路（同一套字段级差异提交 + expectedUpdatedAt 并发守卫），
-    // 而不是自己发整章快照——另一窗口的修改不会被覆盖，成功后版本号同步
-    setDraft((row) => row && row.id === draft.id ? { ...row, content: merged } : row)
+    const merged = `${latest.content}${latest.content ? '\n\n' : ''}${inserted}`
+    const preAnchor = latest.content.slice(-30)
+    // 直接构造新 draft 并同步 draftRef（不等 useEffect），再调 save
+    const newDraft = { ...latest, content: merged }
+    draftRef.current = newDraft
+    setDraft(newDraft)
     const savedOk = await save()
     if (!savedOk) {
       setAdoptionNotice('追加内容已放入编辑器，但保存失败。请点工具栏「保存」重试后再离开本页。')
       return
     }
     if (currentResult.generationId) adoptedIdsRef.current.add(currentResult.generationId)
-    undoAdoptRef.current = { chapterId: draft.id, inserted }
+    undoAdoptRef.current = { chapterId: draft.id, inserted, preAnchor, postAnchor: '', generationId: currentResult.generationId }
     sendFeedback(currentResult.generationId, 'appended')
     const after = await api<{ issues: Array<{ title: string }> }>(`/api/chapters/${draft.id}/precheck`).catch(() => ({ issues: [] }))
     const beforeTitles = new Set(before.issues.map((issue) => issue.title))
@@ -486,7 +537,7 @@ export function WritingStudio() {
         <header className="editor-toolbar"><div className="crumb">正文 <ChevronRight size={14} /> <span>{draft.title}</span></div><div className="chapter-nav-mobile"><IconButton label="新建章节" onClick={addChapter}><FilePlus2 size={16} /></IconButton><IconButton label="上一章" disabled={!prevChapter} onClick={() => prevChapter && void selectChapter(prevChapter.id)}><ChevronLeft size={16} /></IconButton><select value={draft.id} onChange={(event) => void selectChapter(event.target.value)} aria-label="跳转章节">{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{String(chapter.position + 1).padStart(2, '0')} {chapter.title}</option>)}</select><IconButton label="下一章" disabled={!nextChapter} onClick={() => nextChapter && void selectChapter(nextChapter.id)}><ChevronRight size={16} /></IconButton></div><div className="editor-actions"><Badge tone={draft.status === 'revised' ? 'teal' : 'neutral'}>{draft.status === 'revised' ? '已修订' : '草稿'}</Badge>{draft.content_hash && draft.analyzed_hash && draft.content_hash !== draft.analyzed_hash && <button className="stale-chip" onClick={() => navigate('/analysis')} title="本章正文已修改，人物/事件/事实仍基于旧稿；到分析中心重新分析后解除">分析基于旧稿</button>}<span className="save-state">{saved && <><Check size={14} /> 已保存</>}</span><IconButton label={focusMode ? '退出专注写作' : '专注写作（隐藏细纲与表单，只留正文）'} className={focusMode ? 'active' : ''} onClick={() => setFocusMode((v) => !v)}><Maximize2 size={17} /></IconButton><IconButton label="阅读设置（字号/行距/宽度）" onClick={() => setReaderOpen(true)}><Type size={17} /></IconButton><IconButton label="历史版本" onClick={openHistory}><History size={17} /></IconButton><IconButton label={draft.bookmarked ? '取消书签' : '添加书签'} className={draft.bookmarked ? 'active' : ''} onClick={() => updateMark({ bookmarked: !draft.bookmarked })}>{draft.bookmarked ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}</IconButton><IconButton label={draft.excluded ? '本章已设为保留但不导出' : '保留本章但不导出（备用稿）'} className={draft.excluded ? 'active' : ''} onClick={() => updateMark({ excluded: !draft.excluded })} title="保留在项目中、但不进入导出稿件"><EyeOff size={17} /></IconButton><Button variant="secondary" onClick={save} disabled={saving}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />} 保存</Button><IconButton label="删除当前章节" className="danger-icon" onClick={() => setDeleteOpen(true)}><Trash2 size={17} /></IconButton></div></header>
         {!focusMode && <div className="editor-meta">{localDraftNotice && <div className="local-draft-notice"><span>检测到 {localDraftNotice.savedAt ? new Date(localDraftNotice.savedAt).toLocaleString('zh-CN') : ''} 的本地草稿与服务器正文不同（可能来自一次未完成的保存）。</span><Button variant="secondary" onClick={localDraftNotice.restore}>恢复本地草稿</Button><Button variant="ghost" onClick={() => { if (draft) { clearMirror(draft.id); } setLocalDraftNotice(null) }}>丢弃</Button></div>}<Input className="chapter-title-input" value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.target.value }); setChapters((rows) => rows.map((row) => row.id === draft.id ? { ...row, title: event.target.value } : row)) }} /><div className="chapter-facts"><label><span>所属卷</span><select className="input" value={draft.volume_id || ''} onChange={(event) => moveChapter(event.target.value)}>{volumes.map((volume) => <option key={volume.id} value={volume.id}>{volume.title}</option>)}</select></label><label><span>视角</span><Input value={draft.pov} onChange={(event) => setDraft({ ...draft, pov: event.target.value })} placeholder="未指定" /></label><label><span>目标</span><div><Target size={14} /><Input type="number" value={draft.target_words} onChange={(event) => setDraft({ ...draft, target_words: Number(event.target.value) })} /></div></label><label><span>重要性</span><select className="input importance-select" value={draft.importance} onChange={(event) => updateMark({ importance: event.target.value as Chapter['importance'] })}><option value="normal">普通</option><option value="important">重要</option><option value="critical">关键</option></select></label><span>{wordCount.toLocaleString()} 字</span></div><div className="summary-row"><Textarea className="summary-input" value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} placeholder="用一两句话记录本章的信息增量和状态变化……" rows={2} /><Button variant="secondary" className="summary-ai" onClick={rewriteSummary} disabled={summarizing || !draft.content.trim()} title="用模型重写本章摘要">{summarizing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} AI 摘要</Button></div>{summaryNotice && <p className="summary-notice">{summaryNotice}</p>}</div>}
         {!focusMode && <section className={`chapter-outline ${outlineExpanded ? 'expanded' : ''}`}><header><button onClick={() => setOutlineExpanded((value) => !value)}>{outlineExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<ListTree size={15} /><strong>本章细纲</strong>{draft.detailed_outline ? (draft.outline_source ? <Badge tone="teal">由全书大纲拆分</Badge> : <Badge>手写细纲</Badge>) : <Badge tone="amber">还没有细纲</Badge>}</button>{outlineExpanded && <Button variant="ghost" onClick={() => setOutlineEditing((value) => !value)}><Pencil size={13} /> {outlineEditing ? '预览' : '编辑'}</Button>}{!draft.detailed_outline && !outlineEditing && <Button variant="ghost" onClick={() => setOutlineEditing(true)}><Pencil size={13} /> 手写细纲</Button>}</header>{outlineExpanded && <div>{outlineEditing ? <><Textarea rows={16} value={draft.detailed_outline} onChange={(event) => setDraft({ ...draft, detailed_outline: event.target.value })} placeholder="先手写构思，或用右侧创作 Agent 生成——写好后点保存细纲。" /><Button onClick={saveDetailedOutline}><Save size={14} /> 保存细纲</Button></> : draft.detailed_outline ? <MarkdownLike text={draft.detailed_outline} /> : <p className="outline-empty-hint">还没有细纲。<Button variant="ghost" onClick={() => setOutlineEditing(true)}><Pencil size={13} /> 手写</Button>或用右侧创作 Agent 生成。</p>}</div>}</section>}
-        <Textarea className={`manuscript-editor ${focusMode ? 'focus-mode' : ''}`} style={{ fontSize: reader.fontSize, lineHeight: reader.lineHeight, maxWidth: reader.width }} value={draft.content} onSelect={(event) => { const target = event.currentTarget; const text = target.value.slice(target.selectionStart, target.selectionEnd); setSelection(text.trim().length >= 20 ? text.trim() : '') }} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="从一个正在发生的动作开始……" spellCheck={false} />
+        <Textarea className={`manuscript-editor ${focusMode ? 'focus-mode' : ''}`} style={{ fontSize: reader.fontSize, lineHeight: reader.lineHeight, maxWidth: reader.width }} value={draft.content} onSelect={(event) => captureSelection(event.currentTarget)} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="从一个正在发生的动作开始……" spellCheck={false} />
         <footer className="editor-footer"><span>目标完成度 {Math.min(Math.round(wordCount / draft.target_words * 100), 100)}%</span><div className="mini-progress"><i style={{ width: `${Math.min(wordCount / draft.target_words * 100, 100)}%` }} /></div><span>{autosave === 'saving' || saving ? '自动保存中…' : autosave === 'pending' ? '有未保存更改' : autosave === 'error' ? '自动保存失败' : autosave === 'copied' ? '正文已复制到剪贴板' : '已自动保存'}</span>{autosave === 'error' && <><Button variant="secondary" onClick={() => void save()}><RotateCcw size={13} /> 立即重试保存</Button><Button variant="ghost" onClick={() => { void navigator.clipboard?.writeText(draft.content); setAutosave('copied') }} title="把本章全文复制到剪贴板，防止丢失"><Copy size={13} /> 复制正文</Button></>}</footer>
       </>}
     </section>
@@ -505,7 +556,7 @@ export function WritingStudio() {
         <div style={{ fontSize: reader.fontSize - 1, lineHeight: reader.lineHeight }}><MarkdownLike text={currentResult.output || (generating ? '…' : '')} citations={currentResult.citations} /></div>
         {currentResult.task === 'chapter_outline' || task === 'chapter_outline'
           ? <Button variant="secondary" disabled={generating || !currentResult.output.trim()} onClick={() => { if (!draft) return; const cleaned = cleanAdoptable(currentResult.output); setDraft({ ...draft, detailed_outline: cleaned }); setOutlineEditing(true); setAdoptionNotice('已放入「本章细纲」编辑框，确认无误后点保存细纲落盘。') }}>放入「本章细纲」</Button>
-          : <><Button variant="secondary" onClick={appendResult} disabled={generating || !currentResult.output.trim() || currentResult.chapterId !== draft?.id || Boolean(currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId))} title={currentResult.chapterId !== draft?.id ? '该结果属于其他章节，切换回去再采纳' : Boolean(currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId)) ? '该版本已追加' : ''}>{currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId) ? '已追加' : `追加「${variantLabel(activeVariant)}」到正文`}</Button>{undoAdoptRef.current && <Button variant="ghost" onClick={undoAdoption}>撤销采纳</Button>}</>}
+          : <><Button variant="secondary" onClick={appendResult} disabled={generating || !currentResult.output.trim() || currentResult.chapterId !== draft?.id || Boolean(currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId))} title={currentResult.chapterId !== draft?.id ? '该结果属于其他章节，切换回去再采纳' : Boolean(currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId)) ? '该版本已追加' : ''}>{currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId) ? '已追加' : `追加「${variantLabel(activeVariant)}」到正文`}</Button>{selection && <Button variant="secondary" onClick={replaceSelection} disabled={generating || !currentResult.output.trim()} title="把生成结果替换到正文中选中的段落位置">替换选中段落</Button>}{undoAdoptRef.current && <Button variant="ghost" onClick={undoAdoption}>撤销采纳</Button>}</>}
         {adoptionNotice && <p className={`adoption-notice ${adoptionNotice.includes('保存到服务端失败') ? 'error' : ''}`}>{adoptionNotice}</p>}
       </> : <div className="agent-placeholder"><Sparkles size={22} /><p>生成结果会出现在这里。可生成多个版本并排对比，再挑选追加。所有新增事实仍需在审查台确认。</p></div>}</div>
     </aside> : <button className="open-ai-panel" onClick={() => setPanelOpen(true)} title="打开创作 Agent"><Sparkles size={19} /></button>}

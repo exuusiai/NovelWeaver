@@ -13,6 +13,8 @@ export interface GoldenQuery {
   // relevant if ANY substring matches (weakest), or ALL substrings co-occur in one chunk
   // (strongest — used for relation queries where two names must appear together)
   expectAny?: string[]
+  expectAnyOf?: string[]
+  minHits?: number
   expectAll?: string[]
   category?: string
   note?: string
@@ -54,6 +56,11 @@ export function resolveProject(name: string): { id: string; name: string } {
 function isRelevant(hit: { summary: string; keywords: string; content: string }, query: GoldenQuery) {
   const haystack = `${hit.summary} ${hit.keywords} ${hit.content}`
   if (query.expectAll?.length) return query.expectAll.every((needle) => haystack.includes(needle))
+  if (query.expectAnyOf?.length) {
+    // 至少命中 minHits 个关键词（默认 2）：expectAny 只命中一个会退化为"找到人物但没找到答案"
+    const min = query.minHits ?? 2
+    return query.expectAnyOf.filter((needle) => haystack.includes(needle)).length >= Math.min(min, query.expectAnyOf.length)
+  }
   return (query.expectAny ?? []).some((needle) => haystack.includes(needle))
 }
 
