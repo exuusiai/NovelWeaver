@@ -331,6 +331,10 @@ export async function assembleContext(projectId: string, prompt: string, chapter
   // 细纲：显式传入优先，否则读已保存的章节细纲——"AI 真正读了我的细纲"
   const outlineText = options.outline
     || (chapterId ? sql.get<{ content: string }>('SELECT content FROM chapter_outlines WHERE chapter_id = ?', chapterId)?.content || '' : '')
+  // 当前版全书大纲是作者层面的硬约束（"银鹭永不复活"这类结局承诺）——必须进入生成依据。
+  // 取 status='current' 的最高版本号大纲，截断到关键走向长度。
+  const bookOutline = sql.get<{ version: number; content: string }>(`SELECT version, content FROM story_outlines
+    WHERE project_id = ? AND status = 'current' ORDER BY version DESC LIMIT 1`, projectId)
   const volume = chapterId ? sql.get<Record<string, unknown>>(`SELECT v.title, v.summary FROM volumes v
     JOIN chapter_volume_bindings b ON b.volume_id=v.id WHERE b.chapter_id=?`, chapterId) : undefined
   // excludeFuture：upto 模式下原文检索不得越过当前章（改前几章不泄露后文）
@@ -425,6 +429,7 @@ export async function assembleContext(projectId: string, prompt: string, chapter
   const items: ContextItem[] = [
     make('project', '项目基线', `【项目】${project?.name ?? ''}\n题材：${project?.genre ?? ''}\n核心命题：${project?.premise ?? ''}`, 100),
     ...(() => { const macro = buildMacroMemory(projectId, scope === 'upto' ? currentPosition : undefined); return macro ? [make('macro', '全书概览', macro, 90)] : [] })(),
+    ...(bookOutline ? [make('book-outline', `全书大纲 v${bookOutline.version}`, `【全书大纲 v${bookOutline.version}·作者采用版】核心走向与结局约束（生成必须遵守，不得违背其中的承诺与禁令）：\n${bookOutline.content.slice(0, 2400)}`, 94)] : []),
     ...(chapter ? [make('chapter', `当前章节：${chapter.title}`, `【当前章节】${chapter.title}\n视角：${chapter.pov}\n摘要：${chapter.summary}\n正文末尾：${String(chapter.content).slice(-1800)}`, 98)] : []),
     ...(outlineText ? [make('outline', '本章细纲', `【本章细纲】${outlineText}`, 96)] : []),
     ...selectedRelations.map((rel) => make('relation', `关系：${rel.fromName}→${rel.toName}`,
@@ -438,12 +443,14 @@ export async function assembleContext(projectId: string, prompt: string, chapter
       const priority = Number(meta.contextPriority || 50) + (pinned ? 25 : 0)
       // 约束性档案字段直接进卡：作者填的"能力代价/禁忌/性格/秘密"是生成时最容易被
       // 越界的内容，不能只靠检索碰运气
-      const constraintKeys = ['species', 'occupation', 'faction', 'personality', 'abilities', 'strengths', 'weaknesses', 'limitations', 'cost', 'counters', 'flaws', 'fear', 'bottomLine', 'falseBelief', 'secret', 'rules', 'principles', 'goal']
+      // 约束字段全集：作者填写的"说话方式/知识边界/能力限制/致命缺陷"等必须稳定进入生成约束，
+      // 不靠检索碰运气。flaw 与 flaws 是同一字段的历史双拼写，都要读。
+      const constraintKeys = ['species', 'occupation', 'faction', 'personality', 'voice', 'mannerisms', 'knowledge', 'abilities', 'strengths', 'weaknesses', 'limitations', 'cost', 'counters', 'flaw', 'flaws', 'fear', 'bottomLine', 'falseBelief', 'secret', 'rules', 'principles', 'goal', 'arc']
       const constraints = constraintKeys
         .map((key) => [key, meta[key]])
         .filter(([, value]) => typeof value === 'string' && value.trim())
-        .slice(0, 5)
-        .map(([key, value]) => `${key}=${String(value).slice(0, 60)}`)
+        .slice(0, 8)
+        .map(([key, value]) => `${key}=${String(value).slice(0, 90)}`)
       const constraintText = constraints.length ? `\n约束：${constraints.join('；')}` : ''
       return make('card', `资料卡：${row.name}`, `【资料卡/${row.type}/${row.canon_status}】${row.name}：${row.summary}${constraintText}`, 45 + priority / 2, matched ? 25 : 0)
     }),

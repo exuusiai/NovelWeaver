@@ -48,6 +48,13 @@ export function PlotBoard() {
   const [analyzing, setAnalyzing] = useState(false)
   const [analysisNotice, setAnalysisNotice] = useState('')
   const [guideOpen, setGuideOpen] = useState(false)
+  // 分步剧情工坊：先出 2-3 个方向（各说明推进什么/代价/关系变化），作者选一个
+  // 生成场景提纲，确认后才写正文——剧情方向由作者逐步决定，不是整篇接受
+  const [directions, setDirections] = useState<Array<{ title: string; advances: string; cost: string; relation: string; novel: string[] }>>([])
+  const [chosenDirection, setChosenDirection] = useState<number>(-1)
+  const [sceneOutline, setSceneOutline] = useState('')
+  const [directionLoading, setDirectionLoading] = useState(false)
+  const [directionWorkshopOpen, setDirectionWorkshopOpen] = useState(false)
   const [guideStep, setGuideStep] = useState(0)
   const [guideGenerating, setGuideGenerating] = useState(false)
   const [guideResult, setGuideResult] = useState<GenerationResult | null>(null)
@@ -149,6 +156,30 @@ export function PlotBoard() {
     } catch (caught) { setAnalysisNotice(`同步失败：${(caught as Error).message}`) } finally { setAnalyzing(false) }
   }
 
+  const proposeDirections = async () => {
+    setDirectionLoading(true)
+    try {
+      const result = await post<GenerationResult>('/api/ai/generate', { projectId, task: 'plot', prompt: `基于当前大纲与事件，为下一段剧情提出 3 个不同方向。每个方向用 JSON 数组给出：{"title":"方向名","advances":"推进了什么","cost":"付出什么代价","relation":"改变哪段关系","novel":["新增人物/能力/秘密等新提议"]}。只返回 \`\`\`json 代码块。` })
+      const match = result.output.match(/```json\s*([\s\S]*?)```/)
+      if (match) {
+        const parsed = JSON.parse(match[1]) as typeof directions
+        setDirections(parsed.slice(0, 3))
+        setChosenDirection(-1); setSceneOutline('')
+      }
+    } finally { setDirectionLoading(false) }
+  }
+  const generateSceneOutline = async () => {
+    const dir = directions[chosenDirection]
+    if (!dir) return
+    setDirectionLoading(true)
+    try {
+      const result = await post<GenerationResult>('/api/ai/generate', { projectId, task: 'plot', prompt: `把方向「${dir.title}」展开为具体场景提纲：场景目标、出场人物、关键动作、结尾钩子。新提议（${dir.novel.join('、') || '无'}）只作为候选列出，等待作者确认。` })
+      setSceneOutline(result.output)
+    } finally { setDirectionLoading(false) }
+  }
+
+  const handleSceneToEditor = () => { setOutlineDraft(sceneOutline); setOutlineEditing(true); setDirectionWorkshopOpen(false) }
+
   const openGuide = () => {
     setGuide((current) => ({ ...current, synopsis: current.synopsis || project?.premise || '' }))
     setGuideStep(0); setGuideSuggestion(''); setGuideResult(null); setGuideOpen(true)
@@ -189,7 +220,7 @@ export function PlotBoard() {
     <section className="surface outline-workbench">
       <header><div><BookOpenCheck size={18} /><div><h2>全书大纲</h2><p>{activeOutline ? `已保存 ${outlines.length} 个版本，可继续补全或回退` : '可以直接从项目剧情梗概生成，不要求先建立剧情线'}</p></div></div><div>{activeOutline && <select className="input outline-version" value={activeOutline.id} onChange={(event) => setSelectedOutlineId(event.target.value)}>{outlines.map((item) => <option key={item.id} value={item.id}>v{item.version} · {item.title}{item.status === 'current' ? '（当前）' : item.status === 'candidate' ? '（候选）' : ''}</option>)}</select>}{activeOutline && <Button variant="secondary" onClick={() => setOutlineEditing((value) => !value)}><Edit3 size={14} /> {outlineEditing ? '预览' : '编辑'}</Button>}<Button onClick={generateOutline} disabled={generating}>{generating ? <Loader2 className="spin" size={15} /> : <Sparkles size={15} />} {activeOutline ? '从梗概重建' : '从梗概生成大纲'}</Button></div></header>
       {generating && <LoadingState label="正在判断故事形态并搭建完整大纲" />}
-      {activeOutline ? <div className="outline-workspace"><div className="outline-document">{outlineEditing ? <><Textarea rows={24} value={outlineDraft} onChange={(event) => setOutlineDraft(event.target.value)} /><Button onClick={saveOutline} disabled={outlineDraft === activeOutline.content}><Save size={14} /> 保存本版</Button></> : <MarkdownLike text={outlineDraft} />}</div><aside><div className="outline-status"><Badge tone={activeOutline.status === 'current' ? 'teal' : activeOutline.status === 'candidate' ? 'amber' : 'neutral'}>{activeOutline.status === 'current' ? '当前采用' : activeOutline.status === 'candidate' ? '候选版本' : '历史版本'}</Badge><span>版本 v{activeOutline.version}</span></div>{activeOutline.status !== 'current' && <Button variant="secondary" onClick={makeCurrent}><Check size={14} /> 设为当前版</Button>}<Field label="继续完善这一版" hint="例如：拆成四卷；强化第二阶段群像冲突；保留开放结局"><Textarea rows={7} value={outlineInstruction} onChange={(event) => setOutlineInstruction(event.target.value)} placeholder="描述要补全、扩写、替换或检查的内容……" /></Field><Button onClick={refineOutline} disabled={refining || !outlineInstruction.trim()}>{refining ? <Loader2 className="spin" size={14} /> : <WandSparkles size={14} />} {refining ? '正在修订…' : '生成修订版本'}</Button><div className="outline-next-step"><strong>下一步：拆成可写结构</strong><p>并行生成剧情线、分卷、章节和逐章细纲，确认后再写入。</p><Button variant="secondary" onClick={decomposeCurrentOutline} disabled={decomposing}>{decomposing ? <Loader2 className="spin" size={14} /> : <Split size={14} />} {decomposing ? '正在并行拆分…' : '拆分剧情线与细纲'}</Button></div><div className="version-note"><History size={14} /><p>每次 AI 修订都会创建新版本，不覆盖原稿。确认后再设为当前版。</p></div></aside></div> : !generating && <div className="outline-empty"><div><strong>从这里开始你的构思</strong><p>{project?.premise || '可以先手写，也可以让 AI 从项目梗概生成第一版。'}</p></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button onClick={handwriteOutline}><PenLine size={15} /> 手写第一版</Button><Button variant="secondary" onClick={generateOutline}><Sparkles size={15} /> AI 生成第一版</Button></div></div>}
+      {activeOutline ? <div className="outline-workspace"><div className="outline-document">{outlineEditing ? <><Textarea rows={24} value={outlineDraft} onChange={(event) => setOutlineDraft(event.target.value)} /><Button onClick={saveOutline} disabled={outlineDraft === activeOutline.content}><Save size={14} /> 保存本版</Button></> : <MarkdownLike text={outlineDraft} />}</div><aside><div className="outline-status"><Badge tone={activeOutline.status === 'current' ? 'teal' : activeOutline.status === 'candidate' ? 'amber' : 'neutral'}>{activeOutline.status === 'current' ? '当前采用' : activeOutline.status === 'candidate' ? '候选版本' : '历史版本'}</Badge><span>版本 v{activeOutline.version}</span></div>{activeOutline.status !== 'current' && <Button variant="secondary" onClick={makeCurrent}><Check size={14} /> 设为当前版</Button>}<Field label="继续完善这一版" hint="例如：拆成四卷；强化第二阶段群像冲突；保留开放结局"><Textarea rows={7} value={outlineInstruction} onChange={(event) => setOutlineInstruction(event.target.value)} placeholder="描述要补全、扩写、替换或检查的内容……" /></Field><Button onClick={refineOutline} disabled={refining || !outlineInstruction.trim()}>{refining ? <Loader2 className="spin" size={14} /> : <WandSparkles size={14} />} {refining ? '正在修订…' : '生成修订版本'}</Button><div className="outline-next-step"><strong>下一步</strong><p>并行生成剧情线、分卷、章节和逐章细纲，确认后再写入。</p><Button variant="secondary" onClick={decomposeCurrentOutline} disabled={decomposing}>{decomposing ? <Loader2 className="spin" size={14} /> : <Split size={14} />} {decomposing ? '正在并行拆分…' : '拆分剧情线与细纲'}</Button><Button variant="secondary" onClick={() => setDirectionWorkshopOpen(true)}>分步剧情工坊…</Button></div><div className="version-note"><History size={14} /><p>每次 AI 修订都会创建新版本，不覆盖原稿。确认后再设为当前版。</p></div></aside></div> : !generating && <div className="outline-empty"><div><strong>从这里开始你的构思</strong><p>{project?.premise || '可以先手写，也可以让 AI 从项目梗概生成第一版。'}</p></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button onClick={handwriteOutline}><PenLine size={15} /> 手写第一版</Button><Button variant="secondary" onClick={generateOutline}><Sparkles size={15} /> AI 生成第一版</Button></div></div>}
       {decompositionNotice && <p className="decomposition-notice">{decompositionNotice}</p>}
     </section>
 
@@ -244,6 +275,20 @@ export function PlotBoard() {
     {plotOpen && <Modal title="新建剧情线" onClose={() => setPlotOpen(false)} footer={<><Button variant="ghost" onClick={() => setPlotOpen(false)}>取消</Button><Button onClick={addPlotline} disabled={!plotForm.name}>创建</Button></>}><div className="form-grid"><Field label="名称"><Input value={plotForm.name} onChange={(e) => setPlotForm({ ...plotForm, name: e.target.value })} /></Field><Field label="类型"><select className="input" value={plotForm.type} onChange={(e) => setPlotForm({ ...plotForm, type: e.target.value })}><option value="main">主线</option><option value="subplot">支线</option><option value="character">人物弧</option><option value="mystery">谜团</option><option value="romance">感情线</option><option value="framework">阶段框架</option></select></Field><Field label="核心问题"><Textarea rows={4} value={plotForm.summary} onChange={(e) => setPlotForm({ ...plotForm, summary: e.target.value })} /></Field></div></Modal>}
     {decompositionOpen && decomposition && <Modal title="审阅大纲拆分" onClose={() => !applyingPlan && setDecompositionOpen(false)} footer={<><Button variant="ghost" onClick={() => setDecompositionOpen(false)} disabled={applyingPlan}>取消</Button><Button onClick={applyDecomposition} disabled={applyingPlan}>{applyingPlan ? <Loader2 className="spin" size={15} /> : <Check size={15} />} {applyingPlan ? '正在写入…' : '确认写入项目'}</Button></>}><div className="decomposition-preview"><p className="decomposition-note">写入时：已写正文的章节一律保留并按标题沿用；仍未写作的旧规划章节会被新细纲替换。重画剧情线不会丢失任何已完成的文字。</p><section><header><GitBranch size={16} /><strong>{decomposition.plotlines.length} 条剧情线</strong><span>{decomposition.plotlines.reduce((sum, item) => sum + item.events.length, 0)} 个关键事件</span></header>{decomposition.plotlines.map((plotline) => <article key={plotline.name}><div><i style={{ background: plotline.color || '#13766f' }} /><strong>{plotline.name}</strong><Badge>{typeLabel(plotline.type)}</Badge></div><p>{plotline.summary}</p><small>{plotline.events.map((event) => event.title).join(' · ')}</small></article>)}</section><section><header><ListTree size={16} /><strong>{decomposition.volumes.length} 个分卷</strong><span>{decomposition.volumes.reduce((sum, item) => sum + item.chapters.length, 0)} 章细纲</span></header>{decomposition.volumes.map((volume) => <article key={volume.title}><div><strong>{volume.title}</strong><Badge tone="teal">{volume.chapters.length} 章</Badge></div><p>{volume.summary}</p><ol>{volume.chapters.map((chapter) => <li key={chapter.title}><strong>{chapter.title}</strong><span>{chapter.pov || '多视角/未指定'} · {chapter.scenes.length} 场</span><p>{chapter.summary}</p></li>)}</ol></article>)}</section></div></Modal>}
 
+    {directionWorkshopOpen && <Modal title="分步剧情工坊" onClose={() => setDirectionWorkshopOpen(false)} footer={sceneOutline ? <Button onClick={() => handleSceneToEditor()}>放入大纲编辑器</Button> : <Button variant="ghost" onClick={() => setDirectionWorkshopOpen(false)}>关闭</Button>}>
+      <p className="correction-note">先选方向，再看场景提纲，最后才写正文——每一步你都可以否决重来。新人物/能力/秘密只作为候选，确认后才沿用。</p>
+      {!directions.length ? <Button onClick={proposeDirections} disabled={directionLoading}>{directionLoading ? <Loader2 className="spin" size={14} /> : <Compass size={14} />} 提出 3 个方向</Button>
+      : <div className="direction-list">{directions.map((dir, index) => <button key={index} className={`direction-card ${chosenDirection === index ? 'chosen' : ''}`} onClick={() => setChosenDirection(index)}>
+          <strong>{dir.title}</strong>
+          <span>推进：{dir.advances}</span>
+          <span>代价：{dir.cost}</span>
+          <span>关系：{dir.relation}</span>
+          {dir.novel?.length > 0 && <small>新提议：{dir.novel.join('、')}</small>}
+        </button>)}</div>}
+      {chosenDirection >= 0 && !sceneOutline && <Button onClick={generateSceneOutline} disabled={directionLoading}>{directionLoading ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} 生成场景提纲</Button>}
+      {sceneOutline && <div className="generated-content" style={{ maxHeight: 300, overflowY: 'auto' }}><MarkdownLike text={sceneOutline} /></div>}
+      {directions.length > 0 && <Button variant="ghost" onClick={() => { setDirections([]); setSceneOutline(''); setChosenDirection(-1) }}>重新提方向</Button>}
+    </Modal>}
     {guideOpen && <Modal title="五步创作向导" onClose={() => setGuideOpen(false)} footer={<><Button variant="ghost" onClick={() => setGuideOpen(false)}>关闭</Button>{guideStep > 0 && !guideResult && <Button variant="secondary" onClick={() => { setGuideStep((value) => value - 1); setGuideSuggestion('') }}><ChevronLeft size={14} /> 上一步</Button>}{guideStep < guideSteps.length - 1 && !guideResult && <Button onClick={() => { setGuideStep((value) => value + 1); setGuideSuggestion('') }}>下一步 <ChevronRight size={14} /></Button>}{guideStep === guideSteps.length - 1 && !guideResult && <Button onClick={generateGuide} disabled={guideGenerating}>{guideGenerating ? <Loader2 className="spin" size={15} /> : <Sparkles size={15} />} 生成完整方案</Button>}{guideResult && <Button onClick={adoptGuide}><Check size={15} /> 采纳为当前大纲</Button>}</>}><div className="creative-guide"><nav className="guide-progress">{guideSteps.map((step, index) => <button key={step.title} className={`${index === guideStep ? 'active' : ''} ${index < guideStep ? 'done' : ''}`} onClick={() => { setGuideStep(index); setGuideSuggestion(''); setGuideResult(null) }}><span>{index < guideStep ? <Check size={12} /> : index + 1}</span><strong>{step.title}</strong></button>)}</nav>{guideResult ? <section className="guide-final"><header><div><strong>完整创作方案</strong><p>先作为候选审阅，采纳后进入大纲版本管理。</p></div><Badge tone="amber">尚未采纳</Badge></header><MarkdownLike text={guideResult.output} /></section> : <GuideStage guideStep={guideStep} guide={guide} setGuide={setGuide} mode={mode} suggestion={guideSuggestion} notes={guideNotes} setNotes={setGuideNotes} generating={guideGenerating} autocomplete={autocompleteStep} setSuggestion={setGuideSuggestion} />}</div></Modal>}
   </div>
 }

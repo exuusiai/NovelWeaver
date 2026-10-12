@@ -126,8 +126,8 @@ describe('离线全链路冒烟', () => {
     expect(context.status).toBe(200)
     expect(context.data.report.included.some((item) => item.kind === 'relation' && item.label.includes('沈砚'))).toBe(true)
     // 确认/驳回路由
-    const rels = await json<Array<{ id: string }>>('GET', `/api/projects/${projectId}/graph`)
-    const rel = (rels.data as { relations: Array<{ id: string }> }).relations[0]
+    const rels = await json<{ entities: unknown[]; relations: Array<{ id: string }> }>('GET', `/api/projects/${projectId}/graph`)
+    const rel = rels.data.relations[0]
     const patchedRel = await json<{ canon_status: string }>('PATCH', `/api/relations/${rel.id}`, { canonStatus: 'canon' })
     expect(patchedRel.data.canon_status).toBe('canon')
   })
