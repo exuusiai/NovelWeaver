@@ -429,7 +429,7 @@ export async function assembleContext(projectId: string, prompt: string, chapter
   const items: ContextItem[] = [
     make('project', '项目基线', `【项目】${project?.name ?? ''}\n题材：${project?.genre ?? ''}\n核心命题：${project?.premise ?? ''}`, 100),
     ...(() => { const macro = buildMacroMemory(projectId, scope === 'upto' ? currentPosition : undefined); return macro ? [make('macro', '全书概览', macro, 90)] : [] })(),
-    ...(bookOutline ? [make('book-outline', `全书大纲 v${bookOutline.version}`, `【全书大纲 v${bookOutline.version}·作者采用版】核心走向与结局约束（生成必须遵守，不得违背其中的承诺与禁令）：\n${bookOutline.content.slice(0, 2400)}`, 94)] : []),
+    ...(bookOutline ? [make('book-outline', `全书大纲 v${bookOutline.version}`, `【全书大纲 v${bookOutline.version}·作者采用版】核心走向与结局约束（生成必须遵守，不得违背其中的承诺与禁令）：\n${bookOutline.content.slice(0, 4800)}${bookOutline.content.length > 4800 ? '\n……（大纲后半部分已截断，如需完整约束请精简大纲或把关键禁令写在前半部分）' : ''}`, 94)] : []),
     ...(chapter ? [make('chapter', `当前章节：${chapter.title}`, `【当前章节】${chapter.title}\n视角：${chapter.pov}\n摘要：${chapter.summary}\n正文末尾：${String(chapter.content).slice(-1800)}`, 98)] : []),
     ...(outlineText ? [make('outline', '本章细纲', `【本章细纲】${outlineText}`, 96)] : []),
     ...selectedRelations.map((rel) => make('relation', `关系：${rel.fromName}→${rel.toName}`,

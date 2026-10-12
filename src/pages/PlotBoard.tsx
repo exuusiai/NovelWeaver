@@ -54,6 +54,8 @@ export function PlotBoard() {
   const [chosenDirection, setChosenDirection] = useState<number>(-1)
   const [sceneOutline, setSceneOutline] = useState('')
   const [directionLoading, setDirectionLoading] = useState(false)
+  const [directionError, setDirectionError] = useState('')
+  const [directionNotice, setDirectionNotice] = useState('')
   const [directionWorkshopOpen, setDirectionWorkshopOpen] = useState(false)
   const [guideStep, setGuideStep] = useState(0)
   const [guideGenerating, setGuideGenerating] = useState(false)
@@ -165,8 +167,10 @@ export function PlotBoard() {
         const parsed = JSON.parse(match[1]) as typeof directions
         setDirections(parsed.slice(0, 3))
         setChosenDirection(-1); setSceneOutline('')
+      } else {
+        setDirectionError('模型没有返回可解析的方向列表（本地规则模式不支持此功能）。请配置模型后重试，或直接手写大纲。')
       }
-    } finally { setDirectionLoading(false) }
+    } catch (caught) { setDirectionError(`生成方向失败：${(caught as Error).message}`) } finally { setDirectionLoading(false) }
   }
   const generateSceneOutline = async () => {
     const dir = directions[chosenDirection]
@@ -178,7 +182,12 @@ export function PlotBoard() {
     } finally { setDirectionLoading(false) }
   }
 
-  const handleSceneToEditor = () => { setOutlineDraft(sceneOutline); setOutlineEditing(true); setDirectionWorkshopOpen(false) }
+  const handleSceneToEditor = () => {
+    // 场景提纲不是全书大纲的替代——复制到剪贴板并引导去章节细纲
+    void navigator.clipboard?.writeText(sceneOutline)
+    setDirectionWorkshopOpen(false)
+    setDirectionNotice('场景提纲已复制到剪贴板。到「写作」页选中目标章节，在「本章细纲」区粘贴保存——不要直接替换全书大纲。')
+  }
 
   const openGuide = () => {
     setGuide((current) => ({ ...current, synopsis: current.synopsis || project?.premise || '' }))
@@ -277,8 +286,9 @@ export function PlotBoard() {
 
     {directionWorkshopOpen && <Modal title="分步剧情工坊" onClose={() => setDirectionWorkshopOpen(false)} footer={sceneOutline ? <Button onClick={() => handleSceneToEditor()}>放入大纲编辑器</Button> : <Button variant="ghost" onClick={() => setDirectionWorkshopOpen(false)}>关闭</Button>}>
       <p className="correction-note">先选方向，再看场景提纲，最后才写正文——每一步你都可以否决重来。新人物/能力/秘密只作为候选，确认后才沿用。</p>
+      {directionError && <p className="form-error">{directionError}</p>}
       {!directions.length ? <Button onClick={proposeDirections} disabled={directionLoading}>{directionLoading ? <Loader2 className="spin" size={14} /> : <Compass size={14} />} 提出 3 个方向</Button>
-      : <div className="direction-list">{directions.map((dir, index) => <button key={index} className={`direction-card ${chosenDirection === index ? 'chosen' : ''}`} onClick={() => setChosenDirection(index)}>
+      : <div className="direction-list">{directions.map((dir, index) => <button key={index} className={`direction-card ${chosenDirection === index ? 'chosen' : ''}`} onClick={() => { setChosenDirection(index); if (sceneOutline) setSceneOutline('') }}>
           <strong>{dir.title}</strong>
           <span>推进：{dir.advances}</span>
           <span>代价：{dir.cost}</span>
