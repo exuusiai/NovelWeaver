@@ -82,6 +82,7 @@ export function WritingStudio() {
     }
     savedSnapshotRef.current = ''; setAutosave('pending')
     setSelectedId(id); setVariants([]); setActiveVariant(0)
+    setSelection(''); selectionRef.current = null  // ④切章清选区：旧章文字不进入新章生成
   }
   const applyDraft = (row: Chapter) => {
     draftRef.current = row
@@ -196,6 +197,8 @@ export function WritingStudio() {
         const choice = window.confirm('此章已在另一窗口修改并保存。\n\n确定 = 用我窗口的版本覆盖（服务器新版本将存入历史）；取消 = 载入服务器版本（我的修改留在本地草稿镜像里）。')
         if (choice && serverChapter?.updated_at) {
           expectedUpdatedRef.current = serverChapter.updated_at
+          // 释放锁再重试：save() 在 savingRef=true 时直接 return false，递归调用等于没重试
+          savingRef.current = false; setSaving(false)
           return save()
         }
         if (serverChapter) { applyDraft(serverChapter); setAdoptionNotice('已载入另一窗口保存的版本；你的修改保存在本地草稿镜像中，可通过顶部提示恢复。') }
@@ -291,11 +294,14 @@ export function WritingStudio() {
     { key: 'compress', label: '压缩描写', build: () => selection ? `把以下选中描写压缩到原来的六成（保留意象与节奏，直接返回压缩后的完整段落）：\n<<<选中段落>>>\n${selection}\n<<<结束>>>` : '', scope: '压缩选中描写' },
   ] as const
   const runQuickAction = (action: { key: string; label: string; build: () => string; scope: string }) => {
+    // 选区属于上一章时视为无选区——旧章文字绝不进入当前章的生成提示
+    const validSelection = selectionRef.current && draftRef.current && selectionRef.current.chapterId === draftRef.current.id
+    if (selectionRef.current && !validSelection) { setSelection(''); selectionRef.current = null }
     const prompt = action.build()
-    if (!prompt) { setActionScope(`${action.label}需要先在正文中选中要处理的段落（至少 20 字）。`); return }
+    if (!prompt) { setActionScope(`${action.label}需要先在当前正文中选中要处理的段落（至少 20 字）。`); return }
     setTask('prose')
     setPrompt(prompt)
-    setActionScope(selection ? `${action.scope}·选中「${selection.slice(0, 24)}…」` : action.scope)
+    setActionScope(validSelection ? `${action.scope}·选中「${selection.slice(0, 24)}…」` : action.scope)
   }
   const [actionScope, setActionScope] = useState('')
 
@@ -304,7 +310,7 @@ export function WritingStudio() {
     const slot = variants.length
     if (slot >= 3) { setGenerateError('最多保留 3 个对比版本；请先丢弃不需要的版本。'); return }
     setGenerating(true); setGenerateError('')
-    setVariants((current) => [...current, { output: '', model: '', citations: [], chapterId: draft.id, task }])
+    setVariants((current) => [...current, { output: '', model: '', citations: [], chapterId: draft.id, task, selectionSnapshot: selectionRef.current ? { ...selectionRef.current } : undefined }])
     setActiveVariant(slot)
     try {
       const response = await fetch('/api/ai/generate/stream', {
@@ -335,7 +341,7 @@ export function WritingStudio() {
             const text = event.text
             setVariants((current) => current.map((item, index) => index === slot ? { ...item, output: item.output + text } : item))
           } else if (event.type === 'done') {
-            setVariants((current) => current.map((item, index) => index === slot ? { generationId: event.generationId, output: event.output || '', model: event.model || '', citations: event.citations || [], contextReport: event.contextReport, chapterId: draft.id, task } : item))
+            setVariants((current) => current.map((item, index) => index === slot ? { generationId: event.generationId, output: event.output || '', model: event.model || '', citations: event.citations || [], contextReport: event.contextReport, chapterId: draft.id, task, selectionSnapshot: item.selectionSnapshot } : item))
             finished = true
           } else if (event.type === 'error') throw new Error(event.message || '生成失败。')
         }
@@ -411,17 +417,17 @@ export function WritingStudio() {
     const record = undoAdoptRef.current
     if (!record || !draft || draft.id !== record.chapterId) { setAdoptionNotice('没有可撤销的采纳（或已切换章节）。'); return }
     // 用前锚定位插入点：插入时记录了插入位置前的最后 30 字
+    // 只用前锚定位：锚失效（作者改了插入点前的文字）时停止自动撤销，
+    // 绝不回退到 indexOf——原稿另有相同段落时会删错位置
     const anchorIndex = record.preAnchor ? draft.content.lastIndexOf(record.preAnchor) : -1
-    let insertStart: number
-    if (anchorIndex >= 0) {
-      insertStart = anchorIndex + record.preAnchor.length
-      // 跳过锚与插入块之间的分隔空白
-      while (insertStart < draft.content.length && '\n '.includes(draft.content[insertStart])) insertStart += 1
-    } else {
-      insertStart = draft.content.indexOf(record.inserted)
+    if (anchorIndex < 0) {
+      setAdoptionNotice('插入点前的文字已被修改，锚点失效。为防误删，不做自动撤销——请在编辑器中手动删除该段。')
+      return
     }
-    if (insertStart < 0 || draft.content.slice(insertStart, insertStart + record.inserted.length) !== record.inserted) {
-      setAdoptionNotice('插入的内容已被修改或找不到精确位置，无法自动撤销。请在编辑器中手动删除该段（可对照历史版本）。')
+    let insertStart = anchorIndex + record.preAnchor.length
+    while (insertStart < draft.content.length && '\n '.includes(draft.content[insertStart])) insertStart += 1
+    if (draft.content.slice(insertStart, insertStart + record.inserted.length) !== record.inserted) {
+      setAdoptionNotice('插入的内容已被修改（锚点后不是原文），无法自动撤销。请手动删除。')
       return
     }
     const before = draft.content.slice(0, insertStart).replace(/\n\n$/, '')
@@ -437,24 +443,26 @@ export function WritingStudio() {
   const [selection, setSelection] = useState('')
   const selectionRef = useRef<{ chapterId: string; text: string; start: number; end: number } | null>(null)
   const captureSelection = (target: HTMLTextAreaElement) => {
-    const text = target.value.slice(target.selectionStart, target.selectionEnd)
-    if (text.trim().length >= 20 && draftRef.current) {
-      setSelection(text.trim())
-      selectionRef.current = { chapterId: draftRef.current.id, text: text.trim(), start: target.selectionStart, end: target.selectionEnd }
+    const raw = target.value.slice(target.selectionStart, target.selectionEnd)
+    if (raw.trim().length >= 20 && draftRef.current) {
+      // 保存原始文本与精确位置：替换校验用 raw，提示词展示才用 trim（含尾部换行的整段选择不再被拒）
+      setSelection(raw.trim())
+      selectionRef.current = { chapterId: draftRef.current.id, text: raw, start: target.selectionStart, end: target.selectionEnd }
     } else {
       setSelection('')
       selectionRef.current = null
     }
   }
   const replaceSelection = () => {
-    const record = selectionRef.current
-    if (!record || !draft || record.chapterId !== draft.id) { setAdoptionNotice('选区已过期（可能已切换章节或修改正文），请重新选中后重试。'); return }
+    // 优先用候选上绑定的生成时选区快照——生成后作者改选了 B 也不会把 A 的结果写进 B
+    const record = currentResult?.selectionSnapshot ?? selectionRef.current
+    if (!record || !draft || record.chapterId !== draft.id) { setAdoptionNotice('该候选没有绑定的选区（或选区来自其他章节）。请选中段落后重新生成。'); return }
     const cleaned = cleanAdoptable(currentResult?.output || '')
     if (!cleaned.trim()) return
-    // 校验选区文本仍在正文中（正文可能已变）
     const current = draftRef.current?.content || draft.content
+    // 精确校验：原始选区文本（含空白）必须仍在记录的位置上
     if (current.slice(record.start, record.end) !== record.text) {
-      setAdoptionNotice('选区对应的原文已修改，无法自动替换。请手动用生成结果替换。')
+      setAdoptionNotice('生成时的选区对应的原文已修改，无法自动替换。请手动用生成结果替换。')
       return
     }
     setDraft((row) => {

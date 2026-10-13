@@ -238,6 +238,8 @@ export interface GenerationResult {
   /** 生成时绑定的章节与任务：防止跨章节/跨任务误采纳 */
   chapterId?: string
   task?: string
+  /** 生成时捕获的选区快照：局部改写候选替换时回到原文位置 */
+  selectionSnapshot?: { chapterId: string; text: string; start: number; end: number }
 }
 
 export interface AnalysisJob {
