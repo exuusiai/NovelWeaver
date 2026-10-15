@@ -14,6 +14,14 @@
   <img src="https://img.shields.io/badge/%E8%AF%84%E6%B5%8B-%E5%9F%BA%E7%BA%BF%2B%E5%9B%9E%E5%BD%92%E9%97%A8-8b5cf6" alt="eval" />
 </p>
 
+## 🎬 使用演示
+
+[![NovelWeaver 使用演示：设定、关系图、证据检索与写作工作台](docs/demo/preview.gif)](https://github.com/exuusiai/NovelWeaver/releases/tag/demo-2026-10-16)
+
+**[观看 / 下载完整演示（1 分 37 秒 · 1080p · 中文字幕）](https://github.com/exuusiai/NovelWeaver/releases/download/demo-2026-10-16/NovelWeaver-demo-2026-10-16.mp4)** · [演示发布页](https://github.com/exuusiai/NovelWeaver/releases/tag/demo-2026-10-16) · [录制说明](docs/demo-script.md)
+
+以原创示例《雾港纪事》实录：项目总览 → 世界设定 → 关系图谱 → 剧情工程 → 证据检索 → 生成依据预览 → 采纳与撤销 → 连续性审查 → 稿件导出。视频使用**本地规则模式**，生成部分为固定短文本演示；接入模型 API 后可生成完整创作内容。
+
 ## ⚡ 概览
 
 > 你只需要：导入一份文稿（或从零开始构思），用自然语言描述这一章想写什么。
