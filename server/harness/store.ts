@@ -187,5 +187,6 @@ export function exportRun(run: Run) {
     adoption: run.adoption,
     interaction: run.interaction,
     randomState: run.randomState,
+    adaptation: run.adaptation,
   })
 }

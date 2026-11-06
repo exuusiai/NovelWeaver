@@ -4,6 +4,9 @@ process.env.AI_API_KEY = ''
 process.env.AI_BASE_URL = ''
 process.env.AI_EMBEDDING_MODEL = ''
 process.env.HARNESS_MODEL_ENABLED = '0'
+// Transport stays blocked below. Enable the semantic retrieval branch so its
+// mocked-vector tests are independent of a developer/server OFFLINE=1 setting.
+process.env.NOVELWEAVER_OFFLINE = '0'
 const originalFetch = globalThis.fetch
 if (originalFetch)
   globalThis.fetch = (input, init) => {

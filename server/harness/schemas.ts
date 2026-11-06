@@ -1,5 +1,9 @@
 import { z } from 'zod'
-export const rangeSchema = z.object({ start: z.number().int().nonnegative(), end: z.number().int().positive() })
+import { taskInputSchema } from '../tasks/contracts.ts'
+export const rangeSchema = z.object({
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+})
 export const taskSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -14,6 +18,7 @@ export const taskSchema = z.object({
   preserve: z.array(z.string()),
   allowedChanges: z.array(z.string()),
   evidenceIds: z.array(z.string()),
+  constraints: taskInputSchema.shape.constraints.optional(),
 })
 export const patchSchema = z.object({
   id: z.string(),
@@ -32,6 +37,8 @@ export const candidateSchema = z.object({
   patches: z.array(patchSchema).max(100),
   generator: z.string(),
   modelVersion: z.string(),
+  parentCandidateId: z.string().optional(),
+  origin: z.enum(['policy', 'author', 'adapter']).optional(),
 })
 export const checkSchema = z.object({
   name: z.string(),
@@ -47,6 +54,17 @@ export const verificationSchema = z.object({
   author: z.object({ rating: z.number().optional(), note: z.string().optional() }).nullable(),
   status: z.enum(['pass', 'fail', 'pending']),
   checkerVersion: z.string(),
+  factDiff: z
+    .array(
+      z.object({
+        id: z.string(),
+        before: z.boolean().nullable(),
+        after: z.boolean().nullable(),
+        status: z.enum(['pass', 'fail', 'pending']),
+        detail: z.string(),
+      }),
+    )
+    .optional(),
 })
 export const sourceSchema = z.object({
   chapterId: z.string(),
@@ -77,7 +95,11 @@ export const itemSchema = z.object({
   reason: z.string(),
   evidenceIds: z.array(z.string()),
 })
-export const exclusionSchema = z.object({ id: z.string(), kind: z.string(), reason: z.string() })
+export const exclusionSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  reason: z.string(),
+})
 export const selectionSchema = z.object({
   diagnostics: z.array(z.string()),
   items: z.array(itemSchema),
@@ -145,9 +167,21 @@ export const observationSchema = z.object({
   status: z.enum(['ok', 'pending', 'error']),
   output: z.unknown().optional(),
   error: z
-    .object({ code: z.string(), message: z.string(), retryable: z.boolean(), details: z.unknown().optional() })
+    .object({
+      code: z.string(),
+      message: z.string(),
+      retryable: z.boolean(),
+      details: z.unknown().optional(),
+    })
     .optional(),
-  changes: z.array(z.object({ kind: z.string(), id: z.string(), before: z.unknown(), after: z.unknown() })),
+  changes: z.array(
+    z.object({
+      kind: z.string(),
+      id: z.string(),
+      before: z.unknown(),
+      after: z.unknown(),
+    }),
+  ),
   costs: costsSchema,
 })
 export const stepSchema = z.object({
@@ -164,6 +198,75 @@ export const stepSchema = z.object({
 export const projectSnapshotSchema = z.object({
   projectId: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))),
+})
+export const adaptationSchema = z.object({
+  schemaVersion: z.literal('novelweaver.tasks.v1'),
+  routerVersion: z.string(),
+  taskSpec: z
+    .object({
+      projectId: z.string(),
+      schemaVersion: z.literal('novelweaver.tasks.v1'),
+      operation: taskInputSchema.shape.operation.unwrap(),
+      goal: z.string(),
+      chapterId: z.string().optional(),
+      baseRevision: z.number().int().positive().optional(),
+      range: rangeSchema.optional(),
+      storyScale: taskInputSchema.shape.storyScale,
+      narrativeStructure: taskInputSchema.shape.narrativeStructure,
+      inputSize: z.object({
+        characters: z.number().int().nonnegative(),
+        utf16: z.number().int().nonnegative(),
+      }),
+      targetLength: taskInputSchema.shape.targetLength,
+      targetScope: z.enum(['project', 'chapter', 'selection']),
+      continuityDepth: z.enum(['independent', 'chapter', 'cross_chapter']),
+      preserve: z.array(z.string()),
+      constraints: taskInputSchema.shape.constraints,
+      allowedChanges: z.array(z.string()),
+      artifactType: z.string(),
+      fieldSources: z.record(z.string(), z.string()),
+      requiredCapabilities: z.array(z.string()),
+      knowledgeView: z.object({
+        audience: z.enum(['author', 'reader', 'character']),
+        chapterId: z.string().optional(),
+        holderId: z.string().optional(),
+        storyTick: z.number().optional(),
+      }),
+    })
+    .passthrough(),
+  plan: z
+    .object({
+      profileId: z.string(),
+      profileVersion: z.string(),
+      workflow: z.string(),
+      workflowVersion: z.string(),
+      planHash: z.string(),
+      toolAllowlist: z.array(z.string()),
+      feedbackMode: z.enum(['summary', 'fact_diff']),
+      label: z.string(),
+      contextPolicy: z.enum(['minimal', 'author', 'continuity', 'source', 'question']),
+      modelRoles: z.array(z.enum(['planner', 'writer', 'reviewer', 'extractor', 'answerer'])),
+      outputContract: z.string(),
+      evaluationSpec: z.array(z.string()),
+      evaluationSpecVersion: z.string(),
+      segmentCount: z.number().int().positive(),
+      budget: z.object({
+        maxCalls: z.number().positive(),
+        maxTokens: z.number().positive(),
+        timeoutMs: z.number().positive(),
+        maxRetries: z.number().nonnegative(),
+        maxOutputTokens: z.number().positive(),
+        contextTokens: z.number().positive(),
+      }),
+    })
+    .passthrough(),
+  routeDecision: z.object({
+    rules: z.array(z.string()),
+    alternatives: z.array(z.string()),
+    missing: z.array(z.string()),
+    status: z.enum(['ready', 'needs_input']),
+  }),
+  capabilitySnapshot: z.record(z.string(), z.boolean()),
 })
 export const runSchema = z.object({
   id: z.string(),
@@ -196,6 +299,7 @@ export const runSchema = z.object({
   adoption: z.array(z.unknown()),
   createdAt: z.string(),
   updatedAt: z.string(),
+  adaptation: adaptationSchema.optional(),
 })
 export const snapshotSchema = z.object({
   schemaVersion: z.literal('novelweaver.harness.v1'),
@@ -226,4 +330,5 @@ export const exportSchema = z.object({
   adoption: z.array(z.unknown()),
   interaction: runSchema.shape.interaction,
   randomState: z.number(),
+  adaptation: adaptationSchema.optional(),
 })

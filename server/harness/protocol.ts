@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { TaskResolution } from '../tasks/contracts.ts'
 
 export const SCHEMA_VERSION = 'novelweaver.harness.v1'
 export type ErrorCode =
@@ -44,7 +45,12 @@ export const emptyCosts = (): Costs => ({
 export interface Observation {
   status: 'ok' | 'pending' | 'error'
   output?: unknown
-  error?: { code: ErrorCode; message: string; retryable: boolean; details?: unknown }
+  error?: {
+    code: ErrorCode
+    message: string
+    retryable: boolean
+    details?: unknown
+  }
   changes: Array<{ kind: string; id: string; before: unknown; after: unknown }>
   costs: Costs
 }
@@ -73,6 +79,11 @@ export interface Task {
   preserve: string[]
   allowedChanges: string[]
   evidenceIds: string[]
+  constraints?: Array<{
+    id: string
+    type: 'literal' | 'semantic' | 'knowledge' | 'forbidden'
+    text: string
+  }>
 }
 export interface Patch {
   id: string
@@ -91,6 +102,8 @@ export interface Candidate {
   patches: Patch[]
   generator: string
   modelVersion: string
+  parentCandidateId?: string
+  origin?: 'policy' | 'author' | 'adapter'
 }
 export interface Check {
   name: string
@@ -106,6 +119,13 @@ export interface Verification {
   author: { rating?: number; note?: string } | null
   status: 'pass' | 'fail' | 'pending'
   checkerVersion: string
+  factDiff?: Array<{
+    id: string
+    before: boolean | null
+    after: boolean | null
+    status: 'pass' | 'fail' | 'pending'
+    detail: string
+  }>
 }
 export interface Run {
   id: string
@@ -125,15 +145,23 @@ export interface Run {
   status: 'running' | 'paused' | 'completed' | 'failed' | 'canceled'
   stopReason: string
   cursor: number
-  budget: { maxCalls: number; maxTokens: number; timeoutMs: number; maxRetries: number; maxOutputTokens: number }
+  budget: {
+    maxCalls: number
+    maxTokens: number
+    timeoutMs: number
+    maxRetries: number
+    maxOutputTokens: number
+  }
   costs: Costs
   randomState: number
   interaction: Array<{ role: string; content: unknown; at: string }>
   adoption: unknown[]
   createdAt: string
   updatedAt: string
+  adaptation?: TaskResolution
 }
 export interface ToolContext {
+  actor?: 'author' | 'policy' | 'system'
   run: Run
   signal: AbortSignal
   maxOutputTokens: number
@@ -165,6 +193,7 @@ export interface ToolSpec<I = unknown, O = unknown> {
       }
 }
 export class ToolRegistry {
+  capabilities: () => Record<string, boolean> = () => ({})
   private specs = new Map<string, ToolSpec>()
   register<I, O>(spec: ToolSpec<I, O>) {
     if (this.specs.has(spec.name)) throw new Error(`Duplicate tool: ${spec.name}`)

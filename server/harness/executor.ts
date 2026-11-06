@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { sql } from '../db.ts'
 import { estimateTokens } from '../memory.ts'
+import { taskInputSchema } from '../tasks/contracts.ts'
+import { resolveTask, hashPlan } from '../tasks/resolve.ts'
+import { getTaskProfile } from '../tasks/profiles.ts'
 import { captureProject, getRun, projectRevision, saveRun, snapshotRun } from './store.ts'
 import {
   assertActive,
@@ -18,7 +21,10 @@ export const runRequest = z.object({
   chapterId: z.string(),
   baseRevision: z.number().int().positive(),
   goal: z.string().min(1).max(8000),
-  range: z.object({ start: z.number().int().nonnegative(), end: z.number().int().positive() }),
+  range: z.object({
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+  }),
   pov: z.string().default(''),
   holderId: z.string().optional(),
   storyTick: z.number().int().optional(),
@@ -37,8 +43,16 @@ export const runRequest = z.object({
       maxRetries: z.number().int().min(0).max(3).default(1),
       maxOutputTokens: z.number().int().min(1).max(16000).default(3000),
     })
-    .default({ maxCalls: 24, maxTokens: 40000, timeoutMs: 30000, maxRetries: 1, maxOutputTokens: 3000 }),
+    .default({
+      maxCalls: 24,
+      maxTokens: 40000,
+      timeoutMs: 30000,
+      maxRetries: 1,
+      maxOutputTokens: 3000,
+    }),
   seed: z.number().int().default(1),
+  constraints: taskInputSchema.shape.constraints.optional(),
+  feedbackMode: z.enum(['summary', 'fact_diff']).default('summary'),
 })
 export interface WorkflowStep {
   tool: string
@@ -55,10 +69,27 @@ export interface Workflow {
 // still enforces registry schemas, budgets and author-controlled write tools.
 export interface ToolPolicy {
   version: string
+  modelVersion?: string
   chooseNext: (
-    run: Readonly<Run>,
+    observation: PolicyObservation,
     catalog: ReturnType<ToolRegistry['catalog']>,
-  ) => Promise<{ tool: string; input: unknown } | { stopReason: string }>
+    options: { signal: AbortSignal },
+  ) => Promise<
+    ({ tool: string; input: unknown } | { stopReason: string }) & {
+      usage?: { inputTokens: number; outputTokens: number }
+    }
+  >
+}
+export interface PolicyObservation {
+  task: unknown
+  original: unknown
+  candidate: unknown
+  context: unknown
+  verification: unknown
+  recent: unknown[]
+  remainingBudget: { calls: number; tokens: number }
+  profileId: string
+  randomState: number
 }
 const keys: Record<string, string> = {
   'task.define': 'task',
@@ -72,51 +103,149 @@ const keys: Record<string, string> = {
   'revision.commit': 'commit',
   'revision.undo': 'undo',
   'revision.reject': 'rejection',
+  'task.context': 'context',
+  'artifact.generate': 'artifact',
+  'artifact.verify': 'artifactVerification',
 }
 
 export class Executor {
   private controllers = new Map<string, AbortController>()
   private locks = new Set<string>()
+  private policyRuns = new Set<string>()
   constructor(
     public registry: ToolRegistry,
     public workflows: Workflow[],
   ) {}
-  create(input: unknown) {
-    const request = runRequest.parse(input)
-    if (!sql.get('SELECT id FROM projects WHERE id=?', request.projectId))
+  private prepare(input: unknown) {
+    const adaptive = typeof input === 'object' && input !== null && ('operation' in input || 'task' in input)
+    const incoming = adaptive ? taskInputSchema.parse(input) : runRequest.parse(input)
+    const chapter = incoming.chapterId
+      ? sql.get<{
+          content: string
+          revision: number
+          pov: string
+          story_tick: number | null
+        }>(
+          'SELECT content,revision,pov,story_tick FROM chapters WHERE id=? AND project_id=?',
+          incoming.chapterId,
+          incoming.projectId,
+        )
+      : undefined
+    if (adaptive && incoming.chapterId && !chapter)
+      throw new ToolError('NOT_FOUND', '章节不存在或不属于项目。')
+    if (
+      adaptive &&
+      incoming.holderId &&
+      !sql.get(
+        "SELECT id FROM entities WHERE id=? AND project_id=? AND type='character'",
+        incoming.holderId,
+        incoming.projectId,
+      )
+    )
+      throw new ToolError('NOT_FOUND', '视角身份不存在或不属于当前项目。')
+    const adaptation = adaptive
+      ? resolveTask(
+          {
+            ...incoming,
+            chapterContent: (incoming as { chapterContent?: string }).chapterContent ?? chapter?.content,
+            baseRevision: incoming.baseRevision ?? chapter?.revision,
+            pov: incoming.pov || chapter?.pov,
+            storyTick: incoming.storyTick ?? chapter?.story_tick ?? undefined,
+          },
+          this.registry.capabilities(),
+        )
+      : undefined
+    if (
+      adaptation?.taskSpec.knowledgeView.audience === 'character' &&
+      !adaptation.taskSpec.knowledgeView.holderId &&
+      chapter?.pov
+    ) {
+      const identities = sql.all<{ id: string }>(
+        "SELECT id FROM entities WHERE project_id=? AND type='character' AND name=?",
+        incoming.projectId,
+        chapter.pov,
+      )
+      if (identities.length === 1) adaptation.taskSpec.knowledgeView.holderId = identities[0].id
+      else if (identities.length > 1) {
+        adaptation.routeDecision.missing.push('holderId')
+        adaptation.routeDecision.status = 'needs_input'
+      }
+    }
+    let request: Record<string, unknown> = {
+      ...incoming,
+      goal: adaptation?.taskSpec.goal ?? (incoming as { goal?: string }).goal,
+    }
+    if (adaptation?.plan.profileId === 'revision.local' && chapter) {
+      request = runRequest.parse({
+        ...incoming,
+        chapterContent: undefined,
+        goal: adaptation.taskSpec.goal,
+        baseRevision: incoming.baseRevision ?? chapter?.revision,
+        pov: incoming.pov || chapter?.pov,
+        holderId: adaptation.taskSpec.knowledgeView.holderId,
+        range: incoming.range ?? {
+          start: 0,
+          end: chapter?.content.length ?? 0,
+        },
+      })
+      adaptation.taskSpec.range = request.range as {
+        start: number
+        end: number
+      }
+      adaptation.taskSpec.baseRevision = request.baseRevision as number
+    }
+    if (!sql.get('SELECT id FROM projects WHERE id=?', incoming.projectId))
       throw new ToolError('NOT_FOUND', '项目不存在。')
+    return { incoming, request, adaptation }
+  }
+  resolve(input: unknown) {
+    const body = input as Record<string, unknown>
+    return this.prepare({ ...body, operation: body?.operation }).adaptation!
+  }
+  create(input: unknown) {
+    const { incoming, request, adaptation } = this.prepare(input)
     const run: Run = {
       id: sql.id(),
       taskId: sql.id(),
-      projectId: request.projectId,
+      projectId: incoming.projectId,
       schemaVersion: SCHEMA_VERSION,
-      workflow: 'revision.local',
-      workflowVersion: '1.0.0',
+      workflow: adaptation?.plan.workflow ?? 'revision.local',
+      workflowVersion: adaptation?.plan.workflowVersion ?? '1.0.0',
       modelVersions: {},
-      sourceFamilyId: request.sourceFamilyId,
-      split: request.split,
-      dataOrigin: request.dataOrigin,
+      sourceFamilyId: incoming.sourceFamilyId,
+      split: incoming.split,
+      dataOrigin: incoming.dataOrigin,
       request,
-      initialState: captureProject(request.projectId),
-      state: {},
+      initialState: captureProject(incoming.projectId),
+      state:
+        adaptation && adaptation.plan.profileId !== 'revision.local' ? { task: adaptation.taskSpec } : {},
       steps: [],
       status: 'paused',
-      stopReason: 'created',
+      stopReason: adaptation?.routeDecision.status === 'needs_input' ? 'needs_input' : 'created',
       cursor: 0,
-      budget: request.budget,
+      budget: adaptation?.plan.budget ?? runRequest.parse(input).budget,
       costs: emptyCosts(),
-      randomState: request.seed >>> 0,
+      randomState: incoming.seed >>> 0,
       interaction: [{ role: 'author', content: request, at: sql.now() }],
       adoption: [],
       createdAt: sql.now(),
       updatedAt: sql.now(),
+      adaptation,
     }
     saveRun(run)
     snapshotRun(run)
     return run
   }
-  async call(runId: string, name: string, rawInput: unknown): Promise<Observation> {
-    if (this.locks.has(runId)) throw new ToolError('VERSION_CONFLICT', '该运行正在执行工具，请等待当前调用结束。')
+  async call(
+    runId: string,
+    name: string,
+    rawInput: unknown,
+    actor: 'author' | 'policy' | 'system' = 'author',
+  ): Promise<Observation> {
+    if (actor === 'author' && this.policyRuns.has(runId))
+      throw new ToolError('VERSION_CONFLICT', '策略正在执行，请先暂停。')
+    if (this.locks.has(runId))
+      throw new ToolError('VERSION_CONFLICT', '该运行正在执行工具，请等待当前调用结束。')
     this.locks.add(runId)
     const run = getRun(runId)
     const controller = new AbortController()
@@ -124,6 +253,8 @@ export class Executor {
     const existingStepCount = run.steps.length
     try {
       if (run.status === 'canceled') throw new ToolError('CANCELED', '运行已取消。')
+      if (actor === 'policy' && run.state['episode.finish'])
+        throw new ToolError('INVALID_INPUT', 'episode 已结束，请 reset 新任务。')
       if (run.costs.calls >= run.budget.maxCalls) {
         run.status = 'paused'
         run.stopReason = 'budget_exhausted'
@@ -131,15 +262,76 @@ export class Executor {
         throw new ToolError('BUDGET_EXHAUSTED', '调用次数预算不足。')
       }
       const spec = this.registry.get(name)
+      this.assertPlan(run)
+      if (run.adaptation) {
+        const allowedAuthorWrite =
+          actor === 'author' &&
+          run.adaptation.plan.profileId === 'revision.local' &&
+          [
+            'revision.commit',
+            'revision.reject',
+            'revision.undo',
+            'canon.confirm',
+            'memory.scope',
+            'dependency.link',
+          ].includes(name)
+        if (!run.adaptation.plan.toolAllowlist.includes(name) && !allowedAuthorWrite)
+          throw new ToolError('INVALID_INPUT', '工具不在本次任务许可中。')
+        if (
+          actor === 'policy' &&
+          [
+            'task.define',
+            'revision.commit',
+            'revision.reject',
+            'revision.undo',
+            'canon.confirm',
+            'memory.scope',
+            'dependency.link',
+          ].includes(name)
+        )
+          throw new ToolError('INVALID_INPUT', '策略不可调用控制层或作者操作。')
+        if (name === 'task.define') {
+          const parsedTask = runRequest.parse(rawInput)
+          const frozen = runRequest.parse(run.request)
+          if (JSON.stringify(parsedTask) !== JSON.stringify(frozen))
+            throw new ToolError('INVALID_INPUT', '任务目标和范围已固定。')
+        }
+        if (['memory.search', 'setting.select'].includes(name)) {
+          const proposed = (rawInput as { view?: unknown })?.view
+          const frozen = run.adaptation.taskSpec.knowledgeView as unknown as Record<string, unknown>
+          if (
+            !proposed ||
+            Object.keys(proposed).some((key) => (proposed as Record<string, unknown>)[key] !== frozen[key]) ||
+            Object.entries(frozen).some(
+              ([key, value]) => value !== undefined && (proposed as Record<string, unknown>)[key] !== value,
+            )
+          )
+            throw new ToolError('INVALID_INPUT', '不能改变任务知情范围。')
+        }
+        if (
+          name === 'context.pack' &&
+          Number((rawInput as { tokenBudget?: number })?.tokenBudget) >
+            run.adaptation.plan.budget.contextTokens
+        )
+          throw new ToolError('BUDGET_EXHAUSTED', '上下文打包不能扩大任务容量。')
+      }
       const parsed = spec.input.safeParse(rawInput)
       if (!parsed.success) throw new ToolError('INVALID_INPUT', parsed.error.message)
       if (spec.effect === 'write' && !writeGuard.safeParse(parsed.data).success)
         throw new ToolError('INVALID_INPUT', '写操作必须提供 baseRevision 和 idempotencyKey。')
-      const inputTokens = spec.estimateInputTokens?.(parsed.data, run) ?? estimateTokens(JSON.stringify(parsed.data))
+      const inputTokens =
+        spec.estimateInputTokens?.(parsed.data, run) ?? estimateTokens(JSON.stringify(parsed.data))
+      if (
+        run.adaptation &&
+        spec.effect === 'generate' &&
+        inputTokens > run.adaptation.plan.budget.contextTokens
+      )
+        throw new ToolError('BUDGET_EXHAUSTED', '完整模型输入超出任务输入容量。')
       const outputReservation = spec.effect === 'generate' ? run.budget.maxOutputTokens : 0
       if (
         run.costs.calls >= run.budget.maxCalls ||
-        run.costs.inputTokens + run.costs.outputTokens + inputTokens + outputReservation > run.budget.maxTokens
+        run.costs.inputTokens + run.costs.outputTokens + inputTokens + outputReservation >
+          run.budget.maxTokens
       ) {
         run.status = 'paused'
         run.stopReason = 'budget_exhausted'
@@ -150,9 +342,14 @@ export class Executor {
       const started = Date.now()
       const stepId = sql.id()
       const attempt =
-        run.steps.filter((s) => s.tool === name && JSON.stringify(s.input) === JSON.stringify(parsed.data)).length + 1
+        run.steps.filter((s) => s.tool === name && JSON.stringify(s.input) === JSON.stringify(parsed.data))
+          .length + 1
       // Persist the intent before executing. Interrupted calls remain visible after restart.
-      run.interaction.push({ role: 'tool_request', content: { stepId, name, input: parsed.data }, at: sql.now() })
+      run.interaction.push({
+        role: 'tool_request',
+        content: { stepId, name, input: parsed.data },
+        at: sql.now(),
+      })
       run.costs.calls += 1
       run.costs.inputTokens += inputTokens
       run.state.pendingCall = {
@@ -179,7 +376,9 @@ export class Executor {
         })
         const canceled = new Promise<never>((_, reject) => {
           cancelListener = () => reject(new ToolError('CANCELED', '调用已取消。'))
-          controller.signal.addEventListener('abort', cancelListener, { once: true })
+          controller.signal.addEventListener('abort', cancelListener, {
+            once: true,
+          })
         })
         const result = await Promise.race([
           canceled,
@@ -187,6 +386,7 @@ export class Executor {
             assertActive(controller.signal)
             return spec.execute(parsed.data, {
               run,
+              actor,
               signal: controller.signal,
               maxOutputTokens: Math.min(
                 run.budget.maxOutputTokens,
@@ -222,7 +422,10 @@ export class Executor {
         const failure =
           error instanceof ToolError
             ? error
-            : new ToolError(controller.signal.aborted ? 'CANCELED' : 'INTERNAL_ERROR', (error as Error).message)
+            : new ToolError(
+                controller.signal.aborted ? 'CANCELED' : 'INTERNAL_ERROR',
+                (error as Error).message,
+              )
         observation = {
           status: 'error',
           error: {
@@ -232,7 +435,12 @@ export class Executor {
             details: failure.details,
           },
           changes: [],
-          costs: { ...emptyCosts(), calls: 1, inputTokens, latencyMs: Date.now() - started },
+          costs: {
+            ...emptyCosts(),
+            calls: 1,
+            inputTokens,
+            latencyMs: Date.now() - started,
+          },
         }
       } finally {
         if (timer) clearTimeout(timer)
@@ -263,7 +471,11 @@ export class Executor {
         afterRevision: projectRevision(run.projectId),
         observation,
       })
-      run.interaction.push({ role: 'tool_observation', content: { stepId, observation }, at: sql.now() })
+      run.interaction.push({
+        role: 'tool_observation',
+        content: { stepId, observation },
+        at: sql.now(),
+      })
       if (observation.status !== 'error') {
         run.state[keys[name] ?? name] = observation.output
         if (name === 'revision.commit' || name === 'revision.undo' || name === 'revision.reject') {
@@ -274,7 +486,12 @@ export class Executor {
                 (parsed.data as { idempotencyKey?: string }).idempotencyKey,
             )
           ) {
-            run.adoption.push({ action: name, input: parsed.data, result: observation.output, at: sql.now() })
+            run.adoption.push({
+              action: name,
+              input: parsed.data,
+              result: observation.output,
+              at: sql.now(),
+            })
             run.status = 'completed'
             run.stopReason =
               name === 'revision.reject'
@@ -292,7 +509,8 @@ export class Executor {
       saveRun(run)
       return observation
     } catch (error) {
-      const failure = error instanceof ToolError ? error : new ToolError('INTERNAL_ERROR', (error as Error).message)
+      const failure =
+        error instanceof ToolError ? error : new ToolError('INTERNAL_ERROR', (error as Error).message)
       if (run.steps.length !== existingStepCount) throw failure
       const charged = failure.code === 'BUDGET_EXHAUSTED' || failure.code === 'CANCELED' ? 0 : 1
       const costs = {
@@ -302,7 +520,12 @@ export class Executor {
       }
       const observation: Observation = {
         status: 'error',
-        error: { code: failure.code, message: failure.message, retryable: failure.retryable, details: failure.details },
+        error: {
+          code: failure.code,
+          message: failure.message,
+          retryable: failure.retryable,
+          details: failure.details,
+        },
         changes: [],
         costs,
       }
@@ -322,8 +545,16 @@ export class Executor {
         observation,
       })
       run.interaction.push(
-        { role: 'tool_request', content: { stepId: id, name, input: rawInput }, at: sql.now() },
-        { role: 'tool_observation', content: { stepId: id, observation }, at: sql.now() },
+        {
+          role: 'tool_request',
+          content: { stepId: id, name, input: rawInput },
+          at: sql.now(),
+        },
+        {
+          role: 'tool_observation',
+          content: { stepId: id, observation },
+          at: sql.now(),
+        },
       )
       saveRun(run)
       return observation
@@ -332,19 +563,206 @@ export class Executor {
       this.locks.delete(runId)
     }
   }
+  assertPlan(run: Run) {
+    if (!run.adaptation) return
+    const { planHash, ...plan } = run.adaptation.plan
+    let profile: ReturnType<typeof getTaskProfile>
+    try {
+      profile = getTaskProfile(plan.profileId, plan.profileVersion)
+    } catch {
+      throw new ToolError('VERSION_CONFLICT', '任务配置版本不可用，请明确迁移后继续。')
+    }
+    if (
+      hashPlan(plan) !== planHash ||
+      JSON.stringify(plan.toolAllowlist) !== JSON.stringify(profile.toolAllowlist) ||
+      run.workflow !== plan.workflow ||
+      run.workflowVersion !== plan.workflowVersion
+    )
+      throw new ToolError('VERSION_CONFLICT', '执行计划或任务配置版本不同，请明确迁移后重建任务。')
+  }
+  observe(id: string): PolicyObservation {
+    const run = getRun(id)
+    this.assertPlan(run)
+    if (!run.adaptation) throw new ToolError('INVALID_INPUT', '策略需要任务配置。')
+    const verify = run.state.verification as Record<string, unknown> | undefined
+    const rows = verify?.factDiff as Array<{ detail: string; before: unknown; after: unknown }> | undefined
+    const feedback = verify ? { ...verify } : null
+    if (feedback && run.adaptation.plan.feedbackMode !== 'fact_diff') {
+      delete feedback.factDiff
+      feedback.factSummary = rows?.map((r) => `${r.detail}；修改前=${r.before}，修改后=${r.after}`).join('\n')
+    }
+    const context = run.state.context as { text?: string; evidence?: unknown[] } | undefined
+    return structuredClone({
+      task: run.adaptation.taskSpec,
+      original: (run.state.plan as { original?: string })?.original,
+      candidate: run.state.proposal ?? run.state.artifact ?? null,
+      context: {
+        text: context?.text ?? '',
+        evidence: context?.evidence ?? (run.state.evidence as { evidence?: unknown[] })?.evidence ?? [],
+      },
+      verification: feedback ?? run.state.artifactVerification ?? null,
+      recent: run.steps.slice(-4).map((s) => ({
+        tool: s.tool,
+        status: s.observation.status,
+        error: s.observation.error,
+        output: s.tool === 'revision.verify' ? feedback : s.observation.output,
+      })),
+      remainingBudget: {
+        calls: run.budget.maxCalls - run.costs.calls,
+        tokens: run.budget.maxTokens - run.costs.inputTokens - run.costs.outputTokens,
+      },
+      profileId: run.adaptation.plan.profileId,
+      randomState: run.randomState,
+    })
+  }
+  async runPolicy(id: string, policy: ToolPolicy) {
+    if (this.policyRuns.has(id)) throw new ToolError('VERSION_CONFLICT', '策略已在运行。')
+    let run = getRun(id)
+    if (run.adaptation?.plan.profileId !== 'revision.local')
+      throw new ToolError('INVALID_INPUT', '首版本策略循环用于局部改稿。')
+    if (
+      run.status === 'completed' ||
+      run.status === 'canceled' ||
+      run.adaptation.routeDecision.status === 'needs_input'
+    )
+      return run
+    this.assertPlan(run)
+    if (run.state['episode.finish']) return run
+    this.policyRuns.add(id)
+    try {
+      run.status = 'running'
+      run.stopReason = ''
+      run.modelVersions.policy = policy.modelVersion ?? policy.version
+      saveRun(run)
+      if (!run.state.plan) {
+        for (const tool of ['task.define', 'revision.plan']) {
+          const observation = await this.call(
+            id,
+            tool,
+            tool === 'task.define' ? runRequest.parse(run.request) : {},
+            'system',
+          )
+          if (observation.status !== 'ok') throw new ToolError('NEEDS_CHECK', '策略初始化失败。')
+        }
+      }
+      const catalog = this.registry
+        .catalog()
+        .filter((t) => run.adaptation!.plan.toolAllowlist.includes(t.name) && t.name !== 'task.define')
+      while ((run = getRun(id)).status === 'running') {
+        const observation = this.observe(id),
+          estimatedInput = estimateTokens(
+            JSON.stringify({
+              observation,
+              catalog: catalog.map((t) => ({
+                name: t.name,
+                inputSchema: t.inputSchema,
+              })),
+            }),
+          )
+        if (
+          run.costs.calls >= run.budget.maxCalls ||
+          estimatedInput > run.adaptation!.plan.budget.contextTokens ||
+          run.costs.inputTokens + run.costs.outputTokens + estimatedInput + run.budget.maxOutputTokens >
+            run.budget.maxTokens
+        )
+          throw new ToolError('BUDGET_EXHAUSTED', '策略预算已耗尽。')
+        const controller = new AbortController()
+        this.controllers.set(id, controller)
+        const start = Date.now()
+        run.costs.calls++
+        run.costs.inputTokens += estimatedInput
+        run.state.pendingPolicy = { version: policy.version, estimatedInput }
+        saveRun(run)
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let decision: Awaited<ReturnType<ToolPolicy['chooseNext']>>
+        try {
+          decision = await Promise.race([
+            policy.chooseNext(observation, catalog, {
+              signal: controller.signal,
+            }),
+            new Promise<never>((_resolve, reject) => {
+              controller.signal.addEventListener(
+                'abort',
+                () => reject(new ToolError('CANCELED', '策略调用已取消。')),
+                { once: true },
+              )
+              timer = setTimeout(() => {
+                reject(new ToolError('TIMEOUT', '策略调用超时。'))
+                controller.abort()
+              }, run.budget.timeoutMs)
+            }),
+          ])
+        } finally {
+          if (timer) clearTimeout(timer)
+          this.controllers.delete(id)
+        }
+        run = getRun(id)
+        run.costs.inputTokens += (decision.usage?.inputTokens ?? estimatedInput) - estimatedInput
+        run.costs.outputTokens += decision.usage?.outputTokens ?? estimateTokens(JSON.stringify(decision))
+        run.costs.latencyMs += Date.now() - start
+        delete run.state.pendingPolicy
+        if (run.costs.inputTokens + run.costs.outputTokens > run.budget.maxTokens) {
+          run.status = 'paused'
+          run.stopReason = 'budget_exhausted'
+        }
+        run.interaction.push({
+          role: 'assistant',
+          content: {
+            policyVersion: policy.version,
+            decision,
+            usage: decision.usage ?? null,
+          },
+          at: sql.now(),
+        })
+        saveRun(run)
+        if (run.status !== 'running') break
+        if ('stopReason' in decision) {
+          run.status = 'paused'
+          run.stopReason = 'policy_stopped'
+          saveRun(run)
+          break
+        }
+        await this.call(id, decision.tool, decision.input, 'policy')
+      }
+    } catch (error) {
+      run = getRun(id)
+      if (run.status !== 'canceled') {
+        run.status = 'paused'
+        run.stopReason = error instanceof ToolError ? error.code.toLowerCase() : 'policy_error'
+      }
+      delete run.state.pendingPolicy
+      run.interaction.push({
+        role: 'policy_error',
+        content: { message: (error as Error).message },
+        at: sql.now(),
+      })
+      saveRun(run)
+    } finally {
+      this.policyRuns.delete(id)
+      snapshotRun(getRun(id))
+    }
+    return getRun(id)
+  }
   control(id: string, action: 'pause' | 'cancel') {
     const run = getRun(id)
     run.status = action === 'pause' ? 'paused' : 'canceled'
     run.stopReason = action === 'pause' ? 'author_paused' : 'author_canceled'
-    if (action === 'cancel') this.controllers.get(id)?.abort()
-    run.interaction.push({ role: 'author', content: { action }, at: sql.now() })
+    this.controllers.get(id)?.abort()
+    run.interaction.push({
+      role: 'author',
+      content: { action },
+      at: sql.now(),
+    })
     saveRun(run)
     return run
   }
   async resume(id: string) {
     let run = getRun(id)
     if (run.status === 'completed' || run.status === 'canceled') return run
-    if (this.locks.has(id) || run.status === 'running') throw new ToolError('VERSION_CONFLICT', '运行正在执行。')
+    if (run.adaptation?.routeDecision.status === 'needs_input') return run
+    this.assertPlan(run)
+    if (this.locks.has(id) || run.status === 'running')
+      throw new ToolError('VERSION_CONFLICT', '运行正在执行。')
     const workflow = this.workflows.find((w) => w.name === run.workflow && w.version === run.workflowVersion)
     if (!workflow) throw new ToolError('NOT_FOUND', '工作流版本不可用。')
     run.status = 'running'
@@ -360,7 +778,7 @@ export class Executor {
       let observation: Observation | undefined
       for (let retry = 0; retry <= run.budget.maxRetries; retry++) {
         try {
-          observation = await this.call(id, step.tool, step.input(run))
+          observation = await this.call(id, step.tool, step.input(run), 'system')
         } catch (error) {
           run = getRun(id)
           run.status = 'paused'
@@ -375,7 +793,9 @@ export class Executor {
       if (!observation || observation.status !== 'ok') {
         run.status = 'paused'
         run.stopReason =
-          observation?.status === 'pending' ? 'needs_check' : observation?.error?.code.toLowerCase() || 'tool_failed'
+          observation?.status === 'pending'
+            ? 'needs_check'
+            : observation?.error?.code.toLowerCase() || 'tool_failed'
         saveRun(run)
         snapshotRun(run)
         return run
@@ -400,6 +820,12 @@ export class Executor {
 export function recoverRuns() {
   for (const row of sql.all<{ id: string }>('SELECT id FROM harness_runs')) {
     const run = getRun(row.id)
+    if (run.state.pendingPolicy) {
+      delete run.state.pendingPolicy
+      run.status = 'paused'
+      run.stopReason = 'process_interrupted'
+      saveRun(run)
+    }
     if (run.state.pendingCall) {
       const pending = run.state.pendingCall as {
         id: string
@@ -422,8 +848,16 @@ export function recoverRuns() {
         changes: [],
         costs: { ...emptyCosts(), calls: 1, inputTokens: pending.inputTokens },
       }
-      run.steps.push({ ...pending, afterRevision: projectRevision(run.projectId), observation })
-      run.interaction.push({ role: 'recovery', content: { stepId: pending.id, observation }, at: sql.now() })
+      run.steps.push({
+        ...pending,
+        afterRevision: projectRevision(run.projectId),
+        observation,
+      })
+      run.interaction.push({
+        role: 'recovery',
+        content: { stepId: pending.id, observation },
+        at: sql.now(),
+      })
       delete run.state.pendingCall
       run.status = 'paused'
       run.stopReason = 'process_interrupted'

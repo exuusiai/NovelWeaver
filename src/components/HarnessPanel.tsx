@@ -13,6 +13,7 @@ type Props = {
   onChanged: () => Promise<void>
 }
 const reasonLabel: Record<string, string> = {
+  needs_input: '请补充任务范围或明确视角身份',
   created: '准备执行',
   needs_check: '等待检查',
   awaiting_author: '等待作者采纳',
@@ -183,6 +184,7 @@ export function HarnessPanel({ projectId, chapter, selection, prepare, onChanged
           ? { start: selection.start, end: selection.end }
           : { start: 0, end: current.content.length }
       const next = await post<Run>('/api/harness/runs', {
+        operation: 'revise',
         projectId,
         chapterId: current.id,
         baseRevision: current.revision,

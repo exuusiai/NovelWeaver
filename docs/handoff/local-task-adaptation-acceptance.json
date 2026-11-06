@@ -1,0 +1,308 @@
+{
+  "schemaVersion": "novelweaver.tasks.acceptance.v1",
+  "acceptedAt": "2026-11-06T21:22:33.028897+08:00",
+  "branch": "codex/novelweaver-task-adaptation-local",
+  "baseCommit": "3988addcb020861e9f9e6c0368e3ef8e0a58fb1d",
+  "environment": {
+    "node": "22.21.0",
+    "pnpm": "10.15.1",
+    "platform": "macOS",
+    "database": ":memory:"
+  },
+  "baseline": {
+    "testsPassed": 104,
+    "testsSkipped": 4,
+    "build": "pass"
+  },
+  "checks": {
+    "typecheck": "pass",
+    "tests": {
+      "passed": 151,
+      "skipped": 4,
+      "failed": 0,
+      "files": 19,
+      "skipReason": "Two optional private corpora are absent from clean checkouts. Public synthetic retrieval regression ran separately.",
+      "skippedTests": [
+        "检索质量回归门 [首无] 金标准全部可解析且项目存在",
+        "检索质量回归门 [首无] 指标不低于锁定基线（容忍 2pp）",
+        "检索质量回归门 [霍比特人] 金标准全部可解析且项目存在",
+        "检索质量回归门 [霍比特人] 指标不低于锁定基线（容忍 2pp）"
+      ]
+    },
+    "harness": {
+      "passed": 20,
+      "failed": 0
+    },
+    "tasks": {
+      "passed": 30,
+      "failed": 0
+    },
+    "build": "pass",
+    "freshCheckout": {
+      "method": "Copy all tracked and non-ignored new deliverable files into an independent empty directory; no personal database, env file, dist or node_modules copied. Install with frozen lockfile.",
+      "steps": [
+        {
+          "command": "pnpm install --frozen-lockfile",
+          "exitCode": 0
+        },
+        {
+          "command": "pnpm typecheck",
+          "exitCode": 0
+        },
+        {
+          "command": "pnpm exec vitest run --reporter=json --outputFile=.data/clean-tests.json",
+          "exitCode": 0
+        },
+        {
+          "command": "pnpm eval:harness",
+          "exitCode": 0
+        },
+        {
+          "command": "pnpm eval:tasks",
+          "exitCode": 0
+        },
+        {
+          "command": "NOVELWEAVER_DATA_DIR=:memory: NOVELWEAVER_OFFLINE=1 AI_API_KEY= pnpm eval",
+          "exitCode": 0
+        },
+        {
+          "command": "pnpm build",
+          "exitCode": 0
+        }
+      ]
+    }
+  },
+  "retrieval": {
+    "corpus": "雾港纪事 synthetic seed",
+    "queries": 14,
+    "recallAt5": 1,
+    "recallAt8": 1,
+    "recallAt16": 1,
+    "mrr": 0.943,
+    "baselineMrr": 0.946,
+    "mrrDelta": -0.003,
+    "noiseRatioTop8": 0.348,
+    "tolerance": 0.02,
+    "regressionGate": "pass"
+  },
+  "capabilityMatrix": [
+    {
+      "profile": "planning",
+      "offlineExecution": "pass",
+      "realModelQuality": "pending_server_integration"
+    },
+    {
+      "profile": "draft.standalone",
+      "offlineExecution": "pass",
+      "realModelQuality": "pending_server_integration"
+    },
+    {
+      "profile": "draft.continuation",
+      "offlineExecution": "pass",
+      "realModelQuality": "pending_server_integration"
+    },
+    {
+      "profile": "revision.local",
+      "offlineExecution": "pass",
+      "realModelQuality": "pending_server_integration"
+    },
+    {
+      "profile": "review.consistency",
+      "offlineExecution": "pass",
+      "realModelQuality": "pending_server_integration"
+    },
+    {
+      "profile": "analysis.structure",
+      "offlineExecution": "pass",
+      "realModelQuality": "pending_server_integration"
+    },
+    {
+      "profile": "project.qa",
+      "offlineExecution": "pass",
+      "realModelQuality": "pending_server_integration"
+    }
+  ],
+  "taskScenarios": [
+    {
+      "id": "T01",
+      "name": "独立短故事执行轻量上下文与候选链路",
+      "status": "pass"
+    },
+    {
+      "id": "T02",
+      "name": "长篇项目中的短场景不触发全书重规划",
+      "status": "pass"
+    },
+    {
+      "id": "T03",
+      "name": "章节续写读取前文状态并检查连续性",
+      "status": "pass"
+    },
+    {
+      "id": "T04",
+      "name": "长篇选区润色使用真实补丁不越界",
+      "status": "pass"
+    },
+    {
+      "id": "T05",
+      "name": "短输入长产物按输出预算分段",
+      "status": "pass"
+    },
+    {
+      "id": "T06",
+      "name": "长输入短分析仍然只读并输出问题清单",
+      "status": "pass"
+    },
+    {
+      "id": "T07",
+      "name": "作者审稿可读取后文但不修改正史",
+      "status": "pass"
+    },
+    {
+      "id": "T08",
+      "name": "角色视角续写隔离后文秘密与同名人物",
+      "status": "pass"
+    },
+    {
+      "id": "T09",
+      "name": "群像结构进入实际规划适配器",
+      "status": "pass"
+    },
+    {
+      "id": "T10",
+      "name": "开放式创作保留作者意图并执行对应检查",
+      "status": "pass"
+    },
+    {
+      "id": "T11",
+      "name": "结构提取覆盖源稿且不自动更新正史",
+      "status": "pass"
+    },
+    {
+      "id": "T12",
+      "name": "项目问答引用提供证据且没有改稿工具",
+      "status": "pass"
+    },
+    {
+      "id": "T13",
+      "name": "大纲细纲设定剧情的契约分别生效",
+      "status": "pass"
+    },
+    {
+      "id": "T14",
+      "name": "模糊任务需补充目的而不静默重写",
+      "status": "pass"
+    },
+    {
+      "id": "T15",
+      "name": "显式只读目的优先于资料中的重写指令",
+      "status": "pass"
+    },
+    {
+      "id": "T16",
+      "name": "缺生成器保留待配置状态",
+      "status": "pass"
+    },
+    {
+      "id": "T17",
+      "name": "缺语义检查器程序通过也不标质量通过",
+      "status": "pass"
+    },
+    {
+      "id": "T18",
+      "name": "旧正文版本阻止候选生成",
+      "status": "pass"
+    },
+    {
+      "id": "T19",
+      "name": "只读任务调用作者写入在执行层被拒绝",
+      "status": "pass"
+    },
+    {
+      "id": "T20",
+      "name": "策略不能修改目标或提升检索视角",
+      "status": "pass"
+    },
+    {
+      "id": "T21",
+      "name": "策略由失败反馈触发重改并完成当前候选",
+      "status": "pass"
+    },
+    {
+      "id": "T22",
+      "name": "新候选使旧检查失效",
+      "status": "pass"
+    },
+    {
+      "id": "T23",
+      "name": "显式跨章依赖在审查链路实际执行",
+      "status": "pass"
+    },
+    {
+      "id": "T24",
+      "name": "过期正文引用不再可用于改稿",
+      "status": "pass"
+    },
+    {
+      "id": "T25",
+      "name": "输入预算不足明确停止且保留任务约束",
+      "status": "pass"
+    },
+    {
+      "id": "T26",
+      "name": "反复工具调用被总调用预算约束",
+      "status": "pass"
+    },
+    {
+      "id": "T27",
+      "name": "旧任务标签兼容且同步SSE共用执行入口",
+      "status": "pass"
+    },
+    {
+      "id": "T28",
+      "name": "快照恢复profile预算交互并实际续接",
+      "status": "pass"
+    },
+    {
+      "id": "T29",
+      "name": "任务版本失配拒绝静默换流程",
+      "status": "pass"
+    },
+    {
+      "id": "T30",
+      "name": "隔离环境重置快照与独立评分接口",
+      "status": "pass"
+    }
+  ],
+  "browserChecks": {
+    "fixture": "原创合成雾灯案; in-memory DB; no model gateway",
+    "passed": [
+      "Task selection and plan preview",
+      "Explicit same-name POV identity selection for continuation",
+      "Review workflow remains read-only",
+      "Unconfigured semantic capability appears as pending",
+      "Small-window agent panel scrolls to task results"
+    ],
+    "screenshot": "Local ignored .data/task-eval/ui.png; supplied with delivery"
+  },
+  "data": {
+    "origin": "synthetic",
+    "sourceFamilies": [
+      "synthetic-foglamp-01"
+    ],
+    "split": "test",
+    "purpose": "Engineering regression with fixed injected adapters; not a real-model benchmark score"
+  },
+  "paidApiCalls": 0,
+  "modelWeightsDownloaded": false,
+  "trainingStarted": false,
+  "serverWorkRemaining": [
+    "Connect and measure real generator, extractor, checker and tool policy adapters.",
+    "Use independent scoring and held-out source families; report schema validity, evidence support, goal repair, fact preservation, cost and adoption separately.",
+    "Implement explicit source chunk/merge before evaluating oversized extraction tasks.",
+    "Current SSE buffers a complete artifact; add incremental transport only while retaining shared task contracts.",
+    "Measure 4090D inference memory and latency before selecting model or training configuration."
+  ],
+  "knownTestFailures": [],
+  "deliveryRef": "refs/heads/codex/novelweaver-task-adaptation-local"
+}

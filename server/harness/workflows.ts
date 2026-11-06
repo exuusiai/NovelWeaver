@@ -7,7 +7,13 @@ export const revisionWorkflow: Workflow = {
   version: '1.0.0',
   steps: [
     { tool: 'task.define', input: (run) => runRequest.parse(run.request) },
-    { tool: 'memory.search', input: (run) => ({ query: (run.state.task as Task).goal, view: view(run) }) },
+    {
+      tool: 'memory.search',
+      input: (run) => ({
+        query: (run.state.task as Task).goal,
+        view: view(run),
+      }),
+    },
     // Evidence-poor queries get one deterministic follow-up, then retain uncertainty.
     {
       tool: 'memory.search',
@@ -17,7 +23,13 @@ export const revisionWorkflow: Workflow = {
         view: view(run),
       }),
     },
-    { tool: 'setting.select', input: (run) => ({ query: (run.state.task as Task).goal, view: view(run) }) },
+    {
+      tool: 'setting.select',
+      input: (run) => ({
+        query: (run.state.task as Task).goal,
+        view: view(run),
+      }),
+    },
     { tool: 'context.pack', input: () => ({ tokenBudget: 5000 }) },
     {
       tool: 'evidence.read',
@@ -38,5 +50,75 @@ export const revisionWorkflow: Workflow = {
 }
 function view(run: Parameters<Workflow['steps'][number]['input']>[0]) {
   const task = run.state.task as Task
-  return { chapterId: task.chapterId, audience: 'character', holderId: task.holderId, storyTick: task.storyTick }
+  return (
+    run.adaptation?.taskSpec.knowledgeView ?? {
+      chapterId: task.chapterId,
+      audience: 'character',
+      holderId: task.holderId,
+      storyTick: task.storyTick,
+    }
+  )
 }
+
+export const adaptiveRevisionWorkflow: Workflow = {
+  ...revisionWorkflow,
+  name: 'revision.adaptive',
+  steps: revisionWorkflow.steps.map((step) =>
+    step.tool === 'context.pack'
+      ? {
+          ...step,
+          input: (run) => ({
+            tokenBudget: Math.max(1, (run.adaptation?.plan.budget.contextTokens ?? 4000) - 1200),
+          }),
+        }
+      : step,
+  ),
+}
+const artifactSteps: Workflow['steps'] = [
+  { tool: 'task.context', input: () => ({}) },
+  { tool: 'artifact.generate', input: () => ({}) },
+  { tool: 'artifact.verify', input: () => ({}) },
+  { tool: 'episode.finish', input: () => ({}) },
+]
+export const taskWorkflows: Workflow[] = [
+  adaptiveRevisionWorkflow,
+  ...['planning', 'standalone', 'extract', 'qa', 'analysis'].map((name) => ({
+    name: `task.${name}`,
+    version: '1.0.0',
+    steps: artifactSteps,
+  })),
+  {
+    name: 'task.continuation',
+    version: '1.0.0',
+    steps: [
+      artifactSteps[0],
+      { tool: 'draft.plan', input: () => ({}) },
+      {
+        ...artifactSteps[1],
+        next: (run) => {
+          const artifact = run.state.artifact as {
+            segmentsCompleted: number
+            segmentsPlanned: number
+          }
+          return artifact.segmentsCompleted < artifact.segmentsPlanned ? 2 : 3
+        },
+      },
+      artifactSteps[2],
+      artifactSteps[3],
+    ],
+  },
+  {
+    name: 'task.review',
+    version: '1.0.0',
+    steps: [
+      artifactSteps[0],
+      { tool: 'review.rules', input: () => ({}) },
+      {
+        tool: 'impact.analyze',
+        when: (run) => Boolean(run.adaptation?.taskSpec.chapterId),
+        input: (run) => ({ chapterId: run.adaptation!.taskSpec.chapterId }),
+      },
+      ...artifactSteps.slice(1),
+    ],
+  },
+]

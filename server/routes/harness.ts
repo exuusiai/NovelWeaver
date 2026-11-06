@@ -2,13 +2,12 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { sql } from '../db.ts'
 import { asyncRoute, requireProject } from './helpers.ts'
-import { createRegistry } from '../harness/tools.ts'
-import { Executor, recoverRuns } from '../harness/executor.ts'
-import { revisionWorkflow } from '../harness/workflows.ts'
+import { recoverRuns } from '../harness/executor.ts'
 import { exportRun, getRun, replaySnapshot, snapshotRun } from '../harness/store.ts'
 import { ToolError } from '../harness/protocol.ts'
+import { taskExecutor } from '../tasks/service.ts'
 
-export const harnessExecutor = new Executor(createRegistry(), [revisionWorkflow])
+export const harnessExecutor = taskExecutor
 export const harnessRouter = Router()
 recoverRuns()
 harnessRouter.get('/api/harness/tools', (_req, res) => res.json(harnessExecutor.registry.catalog()))
@@ -19,6 +18,7 @@ harnessRouter.get('/api/projects/:projectId/harness/runs', (req, res) => {
       .all<{
         id: string
       }>('SELECT id FROM harness_runs WHERE project_id=? ORDER BY updated_at DESC LIMIT 100', req.params.projectId)
+      .filter(row=>{const run=getRun(row.id);return !run.adaptation || run.adaptation.plan.profileId==='revision.local'})
       .map((row) => {
         const r = getRun(row.id)
         return {

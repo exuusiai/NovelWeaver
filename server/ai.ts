@@ -1,9 +1,7 @@
 import 'dotenv/config'
-import type { ModelRequest, RuntimeModelConfig } from './types.ts'
-import { assembleContext } from './memory.ts'
+import type { RuntimeModelConfig } from './types.ts'
 import { sql } from './db.ts'
 
-type ChatMessage = { role: 'system' | 'user'; content: string }
 
 function asText(value: unknown): string {
   if (typeof value === 'string') return value
@@ -174,126 +172,21 @@ export async function probeModel() {
   }
 }
 
-function localResponse(request: ModelRequest, context: string) {
-  const project = sql.get<{ name: string; genre: string; premise: string }>('SELECT name, genre, premise FROM projects WHERE id = ?', request.projectId)
-  const base = project ?? { name: '未命名故事', genre: '未设定', premise: '尚未建立核心命题' }
-  if (request.task === 'outline') return `# 《${base.name}》结构大纲\n\n## 故事组织判断\n\n根据梗概“${base.premise}”，先判断作品更适合单核推进、群像交织、单元串联、主线转移或探索式结构。没有明确唯一主角时，以反复出现的矛盾、场域变化或读者问题作为叙事引擎。\n\n## 阶段一：建立叙事支点\n\n- 呈现最能兑现题材体验的局面，不强行指定唯一主角。\n- 分别建立人物、群体或单元事件当前的欲望、压力与信息差。\n- 留下一个能跨阶段持续变化的问题。\n\n## 阶段二：驱动力更替\n\n- 让至少两条行动线互相产生后果，而不要求始终服从同一主线。\n- 明确旧目标为何失效，以及新的关注中心如何自然接管叙事。\n- 用状态变化、关系变化或世界规则变化连接各阶段。\n\n## 阶段三：聚合或开放收束\n\n- 选择汇流、接力、循环闭合或开放延展中的一种收束方式。\n- 回答核心读者问题，同时保留题材允许的不确定性。\n- 列出仍需作者决定的角色、节奏与结局选项。\n\n## 待补全\n\n1. 作品属于哪种故事形态？\n2. 哪些人物、地点或问题可以在主线变化后维持连续性？\n3. 计划按卷、阶段还是单元组织？\n\n> 这是本地规则引擎生成的可编辑初版。连接模型后会依据项目资料生成具体事件、转折和人物状态表。`
-  if (request.task === 'chapter_outline') return `# 单章细纲\n\n**章节意图**：${request.prompt || '推进当前主线并制造新的信息差'}\n\n1. **开场状态**：从一个正在发生的动作进入，避免背景说明开场。\n2. **场景一**：主角带着明确目标进入场景；阻力来自已有关系或规则。\n3. **场景二**：获得线索，但线索同时提高代价或暴露风险。\n4. **情绪转折**：让角色对同一事实产生新的解释。\n5. **连续性约束**：不得越过角色当前知识边界；能力必须支付既定代价。\n6. **结尾钩子**：以具体发现、决定或迫近危险结束。\n\n预计字数：2800–3500 字。`
-  if (request.task === 'prose') return `雨声沿着窗框一寸寸压低房间里的呼吸。\n\n主角没有立刻回答。那句本应脱口而出的话，在触及既有线索时忽然有了重量。桌上的物件仍停在原处，可它投下的影子已经偏离了灯光。\n\n“你也看见了，对吗？”\n\n门外传来第二次敲击。这一次，更近。\n\n> 本地模式只生成短演示文本。配置模型 API 后，系统会使用当前章节、人物状态、剧情线、设定规则和检索证据生成完整草稿。`
-  if (request.task === 'setting') return `## 设定候选\n\n- **名称**：待命名设定\n- **核心功能**：直接服务于“${request.prompt || base.premise}”的冲突，而不是只增加背景信息。\n- **可见规则**：普通角色能够观察到的稳定规律。\n- **隐藏规则**：在中后段改变读者理解的机制。\n- **代价与限制**：每次使用都产生可积累、可追踪的后果。\n- **例外条件**：只保留一个，并为其准备前置伏笔。\n- **关联对象**：至少连接一名角色、一个势力和一条剧情线。`
-  if (request.task === 'plot') {
-    const selectedMode = request.prompt.match(/作品采用[“\"]([^”\"]+)/)?.[1] || '当前故事形态'
-    if (request.prompt.includes('创作向导')) return `## ${selectedMode}的本步候选\n\n### 方案 A：后果接力（推荐）\n\n前一阶段人物留下的决定、债务或误解，成为下一阶段行动者无法回避的起点。关注中心可以变化，但因果链不断。适合主线转移、群像和跨时代故事。\n\n### 方案 B：稳定场域\n\n让地点、组织、案件类型或共同危机保持稳定，不同人物轮流进入。连续性来自场域规则及其累积变化，而不是同一个人的目标。\n\n### 方案 C：问题拼图\n\n每个视角只获得局部事实，各阶段可以拥有不同任务。读者持续追踪的是“这些局部如何组成整体”，适合多中心拼图与探索式结构。\n\n**推荐 A**：它最容易把目标变化写成前因后果，而不是突然换线。下一步可明确：上一阶段留下什么不可逆后果、谁最先承受、承受者为何采取与前人不同的行动。\n\n> 本地规则模式给出结构候选；连接模型后会结合项目人物、事件和设定填入专属内容。`
-    return `## 剧情线候选\n\n- **叙事中心**：可以是人物、群体、地点、案件或反复出现的问题。\n- **触发变化**：一个可验证的异常打破当前平衡，使至少一方必须行动。\n- **递进方式**：让不同人物的行动互相制造后果，而不是都服从同一目标。\n- **更替节点**：旧任务完成、失效或暴露更大问题时，由最直接承受后果的一方接管关注中心。\n- **连续性支点**：保留共同场域、因果债务、主题问题或关键物件中的至少一项。\n- **阶段收束**：展示关系、认知、资源或世界规则发生了什么不可逆变化。`
-  }
-  if (request.task === 'analysis') return `## 本地分析结果\n\n当前请求：${request.prompt}\n\n系统已组装项目设定、活跃剧情线、近期事件与相关原文片段。未配置远程模型时，不对复杂事实作无依据推断。建议在审查页运行规则检查，或配置 API 后再次分析。`
-  return `我已读取《${base.name}》的项目记忆。当前处于本地规则模式，可以执行结构化操作、检索原文、维护设定和生成基础候选。\n\n你的请求是：${request.prompt}\n\n相关上下文已找到 ${context.length} 个字符。配置模型 API 后，我会基于同一上下文快照返回完整推演结果。`
+// Both HTTP modes execute the same task profile. SSE publishes only validated artifacts.
+export async function generate(request: import('./tasks/contracts.ts').TaskInput) {
+  const { runGenerationTask } = await import('./tasks/service.ts')
+  return runGenerationTask(request)
 }
-
-function recordGeneration(request: ModelRequest, assembledText: string, output: string, model: string, usage?: ModelUsage) {
-  const generationId = sql.id()
-  sql.run(`INSERT INTO generations (id, project_id, task_type, input, context_snapshot, output, model, created_at, usage, used)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, -1)`, generationId, request.projectId, request.task,
-    request.prompt, assembledText, output, model, sql.now(), usage ? JSON.stringify(usage) : '')
-  return generationId
-}
-
-export async function generate(request: ModelRequest) {
-  const assembled = await assembleContext(request.projectId, request.prompt, request.chapterId, 10000, { content: request.chapterContent, outline: request.chapterOutline, scope: request.scope })
-  let output: string
-  let model = 'local-rules-v1'
-  let usage: ModelUsage | undefined
-  if (runtimeConfig.apiKey) {
-    const formatInstruction = request.task === 'analysis'
-      ? '以结构清晰的 Markdown 笔记作答：使用标题、要点列表和必要的表格；先给结论，再列原文证据与不确定项。每个陈述事实的小节或要点都必须至少附带一个[R编号]引用，零引用的事实结论视为无效输出。不要用 JSON，不要输出思考过程。'
-      : '使用清晰的 Markdown 输出，不要输出思考过程。'
-    const completion = await chatCompletion([
-      { role: 'system', content: `你是小说创作工作台中的主动型叙事策划助手。只使用给定项目上下文，不得把推测写成正史；事实结论需引用[R编号]；输出中文。不要默认作品有唯一主角、固定主线或三幕式：先判断它属于单核推进、群像交织、单元串联、主线转移、多中心拼图或探索式结构，再给适配方案。用户信息不足时应给出可直接修改的合理候选，并把关键假设单列出来，而不是只反问用户。${formatInstruction}` },
-      { role: 'user', content: `${assembled.text}\n\n【任务类型】${request.task}\n【用户要求】${request.prompt}` },
-    ], request.task === 'analysis' ? 0.2 : 0.75, false, { disableThinking: true })
-    output = completion.text
-    usage = completion.usage
-    if (!output) output = '模型未返回内容。'
-    model = runtimeConfig.model
-  } else {
-    output = localResponse(request, assembled.text)
-  }
-  const generationId = recordGeneration(request, assembled.text, output, model, usage)
-  return { generationId, output, model, citations: assembled.hits, contextReport: assembled.report }
-}
-
-async function* streamChatCompletion(messages: ChatMessage[], temperature: number): AsyncGenerator<string> {
-  if (!runtimeConfig.apiKey) throw Object.assign(new Error('当前未配置模型 API。请先在设置页填写 API Key。'), { code: 'MODEL_REQUIRED' })
-  const response = await fetch(`${runtimeConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtimeConfig.apiKey}` },
-    signal: AbortSignal.timeout(300000),
-    body: JSON.stringify({ model: runtimeConfig.model, temperature, stream: true, messages }),
-  })
-  if (!response.ok || !response.body) {
-    const rawError = await response.text().catch(() => '')
-    let message = rawError
-    try { message = (JSON.parse(rawError) as { error?: { message?: string } }).error?.message || rawError } catch { /* keep provider text */ }
-    throw new Error(`模型连接失败（HTTP ${response.status}）：${message}`)
-  }
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) return
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) continue
-      const payload = trimmed.slice(5).trim()
-      if (payload === '[DONE]') return
-      try {
-        const parsed = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: unknown } }> }
-        const text = asText(parsed.choices?.[0]?.delta?.content)
-        if (text) yield text
-      } catch { /* keepalive or malformed line */ }
-    }
-  }
-}
-
 export type GenerateStreamEvent =
   | { type: 'delta'; text: string }
-  | { type: 'done'; generationId: string; output: string; model: string; citations: Awaited<ReturnType<typeof assembleContext>>['hits']; contextReport: Awaited<ReturnType<typeof assembleContext>>['report'] }
+  | ({ type: 'done' } & Awaited<ReturnType<typeof generate>>)
   | { type: 'error'; message: string }
-
-export async function* generateStream(request: ModelRequest): AsyncGenerator<GenerateStreamEvent> {
-  const assembled = await assembleContext(request.projectId, request.prompt, request.chapterId, 10000, { content: request.chapterContent, outline: request.chapterOutline, scope: request.scope })
-  let output = ''
-  let model = 'local-rules-v1'
-  if (runtimeConfig.apiKey) {
-    const formatInstruction = request.task === 'analysis'
-      ? '以结构清晰的 Markdown 笔记作答：使用标题、要点列表和必要的表格；先给结论，再列原文证据与不确定项。每个陈述事实的小节或要点都必须至少附带一个[R编号]引用，零引用的事实结论视为无效输出。不要用 JSON，不要输出思考过程。'
-      : '使用清晰的 Markdown 输出，不要输出思考过程。'
-    const messages: ChatMessage[] = [
-      { role: 'system', content: `你是小说创作工作台中的主动型叙事策划助手。只使用给定项目上下文，不得把推测写成正史；事实结论需引用[R编号]；输出中文。不要默认作品有唯一主角、固定主线或三幕式：先判断它属于单核推进、群像交织、单元串联、主线转移、多中心拼图或探索式结构，再给适配方案。用户信息不足时应给出可直接修改的合理候选，并把关键假设单列出来，而不是只反问用户。${formatInstruction}` },
-      { role: 'user', content: `${assembled.text}\n\n【任务类型】${request.task}\n【用户要求】${request.prompt}` },
-    ]
-    try {
-      for await (const text of streamChatCompletion(messages, request.task === 'analysis' ? 0.2 : 0.75)) {
-        output += text
-        yield { type: 'delta', text }
-      }
-    } catch (error) {
-      yield { type: 'error', message: (error as Error).message }
-      return
-    }
-    model = runtimeConfig.model
-    if (!output.trim()) {
-      yield { type: 'error', message: '模型未返回内容。请重试或更换模型。' }
-      return
-    }
-  } else {
-    output = localResponse(request, assembled.text)
-    yield { type: 'delta', text: output }
+export async function* generateStream(request: import('./tasks/contracts.ts').TaskInput): AsyncGenerator<GenerateStreamEvent> {
+  try {
+    const result = await generate(request)
+    yield { type: 'delta', text: result.output }
+    yield { type: 'done', ...result }
+  } catch (error) {
+    yield { type: 'error', message: (error as Error).message }
   }
-  const generationId = recordGeneration(request, assembled.text, output, model)
-  yield { type: 'done', generationId, output, model, citations: assembled.hits, contextReport: assembled.report }
 }

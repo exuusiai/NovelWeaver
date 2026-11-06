@@ -1,5 +1,7 @@
 # NovelWeaver Harness 本机阶段交接
 
+任务适配已在后续阶段完成。当前部署请使用[任务适配交接](local-task-adaptation.md)与[服务器联调说明](server-task-adaptation-handoff.md)，分支为 `codex/novelweaver-task-adaptation-local`。下文保留首轮 Harness 的实现与验收记录。
+
 本轮已形成“任务定义 → 检索与上下文 → 原文核对 → 局部补丁 → 分层检查 → 作者采纳 → 历史与记忆更新”的可运行链路。固定工作流负责第一版业务，工具注册表和策略接口用于后续服务器模型联调。离线验收使用原创合成故事、确定性 mock 和内存 SQLite。
 
 验收日期：2026-11-06（Asia/Shanghai）。改造起点：`480c578c0f642cb1d4b2813f6b7d59497978a930`。

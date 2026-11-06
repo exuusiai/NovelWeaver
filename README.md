@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Express-5-000000" alt="Express 5" />
   <img src="https://img.shields.io/badge/SQLite-FTS5%20trigram-003b57" alt="SQLite FTS5" />
   <img src="https://img.shields.io/badge/TypeScript-strict-3178c6" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/tests-104%20passed-2ea44f" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-151%20passed-2ea44f" alt="tests" />
   <img src="https://img.shields.io/badge/CI-GitHub%20Actions-2088ff" alt="ci" />
   <img src="https://img.shields.io/badge/%E8%AF%84%E6%B5%8B-%E5%9F%BA%E7%BA%BF%2B%E5%9B%9E%E5%BD%92%E9%97%A8-8b5cf6" alt="eval" />
 </p>
@@ -20,7 +20,7 @@
 
 **[观看 / 下载完整演示（1 分 37 秒 · 1080p · 中文字幕）](https://github.com/exuusiai/NovelWeaver/releases/download/demo-2026-10-16/NovelWeaver-demo-2026-10-16.mp4)** · [演示发布页](https://github.com/exuusiai/NovelWeaver/releases/tag/demo-2026-10-16) · [录制说明](docs/demo-script.md)
 
-以原创示例《雾港纪事》实录：项目总览 → 世界设定 → 关系图谱 → 剧情工程 → 证据检索 → 生成依据预览 → 采纳与撤销 → 连续性审查 → 稿件导出。视频使用**本地规则模式**，生成部分为固定短文本演示；接入模型 API 后可生成完整创作内容。
+以原创示例《雾港纪事》实录：项目总览 → 世界设定 → 关系图谱 → 剧情工程 → 证据检索 → 生成依据预览 → 采纳与撤销 → 连续性审查 → 稿件导出。视频使用历史版本的**本地规则模式**，生成部分为固定短文本演示；接入模型 API 后可生成完整创作内容。
 
 ## ⚡ 概览
 
@@ -28,7 +28,7 @@
 >
 > NovelWeaver 会返回：**带证据引用的可追溯草稿**、一个随写作演进的**结构化正史数据库**，以及一套**每次提交都在跑的质量回归门**——而不是一段看起来能用、却无法验证的文本。
 
-- **本地优先**：全部创作数据存于本地 SQLite，无 Key 也能离线运行完整链路；API Key 刻意不持久化
+- **本地优先**：全部创作数据存于本地 SQLite，无 Key 可使用导入、检索、规则审查和任务计划，语义生成单独配置；API Key 刻意不持久化
 - **可追溯**：AI 产出永远只是候选，正史必须由作者显式确认；每个事实结论都挂着 `[Rn]` 证据引用，悬停即见原文
 - **可度量**：检索、提取、审查、生成四条评测线全部金标准 + 基线锁定 + 回归门，指标劣化超过 2pp 测试即失败
 
@@ -97,7 +97,7 @@
 ### 🛠️ 面向长文的工程细节
 
 - **自适应分批分析**：18k 字符分批 → 解析失败对半重试 → 精简字段兜底，配合多层 JSON 修复（`<think>` 剥离 / 代码块提取 / 括号配平 / jsonrepair）
-- **流式生成**：SSE 逐字渲染，最多 3 个版本并排对比、择一采纳（自动剥离 `[R1]` 引用标记）
+- **流式生成**：SSE 交付完成契约检查的候选，最多 3 个版本并排对比、择一采纳（自动剥离 `[R1]` 引用标记）
 - **写作安全网**：停笔 2.5s 自动保存、章节历史版本（50 份可恢复）、每 12h 项目全量快照
 - **模型配置省心**：`/api/model/catalog` 直接拉取网关可用模型列表点选填入，六家服务商预设（DeepSeek / OpenAI / OpenRouter / 智谱 / Ollama 等），Key 可见性切换
 - **⌘K 命令面板**：搜索记忆直达、页面跳转与快捷操作的统一入口
@@ -121,7 +121,7 @@ pnpm eval:generation  # 生成接地评测（需本地服务与 API 密钥）
 pnpm build && pnpm start   # 生产模式（默认只监听 127.0.0.1）
 ```
 
-无 API Key 即可体验导入、检索、规则审查、导出与本地生成；`eval/` 目录包含全部评测资产（金标准、Canary、基线），检索与审查评测不依赖任何外部服务，CI 对每次 push 自动跑完整回归。
+无 API Key 即可体验导入、检索、规则审查、导出和任务计划；新生成任务明确显示语义能力待配置；`eval/` 目录包含全部评测资产（金标准、Canary、基线），检索与审查评测不依赖任何外部服务，CI 对每次 push 自动跑完整回归。
 
 ## 🏗️ 架构
 
@@ -142,8 +142,20 @@ SQLite + FTS5（WAL、外键级联、双 FTS 表 + 触发器）
         ├── exporter    TXT / MD / DOCX / EPUB
         └── backup      全量快照 + 保留策略
 
-模型层：OpenAI 兼容网关（模型列表拉取 / usage 采集 / 错误诊断 / 推理模型兼容），无 Key 时降级为确定性本地规则
+模型层：OpenAI 兼容网关（模型列表拉取 / usage 采集 / 错误诊断 / 推理模型兼容），无 Key 时保留检索、规则审查与任务计划，语义生成返回待配置状态
 ```
+
+## 按任务适配的创作链路
+
+写作台提供规划、独立创作、章节续写、局部改稿、一致性审查、结构提取和项目问答入口。任务目的、作品规模、目标长度、知情视角和叙事形态共同决定上下文、工具许可、产物格式和检查清单。长篇中的局部修改保持选区边界；审查和提取默认只读，生成结果先作为候选。
+
+```bash
+pnpm eval:tasks     # 30 项离线任务/状态场景；固定合成 fixture，零付费 API
+pnpm tasks:schemas # 导出任务与产物契约、profile 目录
+pnpm tasks:bridge  # 独立进程 JSONL 环境接口；无训练或模型依赖
+```
+
+任务计划与能力状态可在执行前预览。缺少生成/检查器时保留待配置或待核验；当前 SSE 缓冲完整产物后交付，不逐 Token 推送。[本地任务适配交接](docs/handoff/local-task-adaptation.md)包含接口和验收，[服务器联调说明](docs/handoff/server-task-adaptation-handoff.md)限定本轮为联调与推理评测，暂不启动训练。
 
 ## Harness 改稿闭环
 

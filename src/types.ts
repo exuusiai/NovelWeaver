@@ -232,6 +232,7 @@ export interface StoryFact {
 }
 
 export interface GenerationResult {
+  executionStatus?: 'candidate' | 'pending'
   generationId?: string
   output: string
   model: string

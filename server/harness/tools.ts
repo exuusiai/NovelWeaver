@@ -6,6 +6,7 @@ import { bindSources, memoryScope, setMemoryScope, sourceBindings, visibilityRea
 import { contentHash, rebuildChapterMemory, saveChapterHistory } from '../routes/helpers.ts'
 import { defaultAdapters, type Adapters } from './adapters.ts'
 import { chapterEvidence, digest, readEvidence, type Evidence } from './evidence.ts'
+import { registerTaskTools } from '../tasks/tools.ts'
 import {
   assertActive,
   ToolError,
@@ -21,6 +22,7 @@ import {
 } from './protocol.ts'
 import {
   candidateSchema,
+  patchSchema,
   contextSchema,
   evidenceSchema,
   exclusionSchema,
@@ -81,19 +83,33 @@ export function applyPatches(content: string, patches: Patch[], range: { start: 
 }
 function selectedPatches(candidate: Candidate, ids?: string[]) {
   if (!ids) return candidate.patches
-  if (!ids.length || new Set(ids).size !== ids.length || ids.some((id) => !candidate.patches.some((p) => p.id === id)))
+  if (
+    !ids.length ||
+    new Set(ids).size !== ids.length ||
+    ids.some((id) => !candidate.patches.some((p) => p.id === id))
+  )
     throw new ToolError('INVALID_INPUT', '采纳的补丁 ID 无效。')
   return candidate.patches.filter((p) => ids.includes(p.id))
 }
 function taskEvidence(run: Run): Evidence[] {
   const context = run.state.context as { evidence?: Evidence[] } | undefined
   const read = run.state.evidence as { evidence?: Evidence[] } | undefined
-  return [...new Map([...(context?.evidence ?? []), ...(read?.evidence ?? [])].map((e) => [e.id, e])).values()]
+  return [
+    ...new Map([...(context?.evidence ?? []), ...(read?.evidence ?? [])].map((e) => [e.id, e])).values(),
+  ]
 }
 function validEvidence(run: Run, task: Task, ids: string[]) {
   for (const id of ids) {
     const evidence = readEvidence(run.projectId, id)
-    const reason = visibilityReason(run.projectId, evidence.kind, evidence.sourceId, viewOf(task), evidence.chapterId)
+    if (['input', 'outline_input'].includes(evidence.kind) && evidence.sourceId !== run.id)
+      throw new ToolError('STALE_EVIDENCE', '不能读取其他任务的私有输入快照。')
+    const reason = visibilityReason(
+      run.projectId,
+      evidence.kind,
+      evidence.sourceId,
+      run.adaptation?.taskSpec.knowledgeView ?? viewOf(task),
+      evidence.chapterId,
+    )
     if (reason) throw new ToolError('STALE_EVIDENCE', `证据超出任务范围：${reason}`, false, { id })
   }
 }
@@ -126,7 +142,8 @@ function idempotent<T>(
       input.idempotencyKey,
     )
     if (receipt) {
-      if (receipt.fingerprint !== hash) throw new ToolError('IDEMPOTENCY_CONFLICT', '幂等标识已用于不同请求。')
+      if (receipt.fingerprint !== hash)
+        throw new ToolError('IDEMPOTENCY_CONFLICT', '幂等标识已用于不同请求。')
       return JSON.parse(receipt.result) as T
     }
     const task = taskOf(context.run)
@@ -148,7 +165,11 @@ const commitSchema = z.object({
   revision: z.number(),
   historyId: z.string(),
   appliedPatchIds: z.array(z.string()),
-  before: z.object({ title: z.string(), content: z.string(), summary: z.string() }),
+  before: z.object({
+    title: z.string(),
+    content: z.string(),
+    summary: z.string(),
+  }),
 })
 const pendingChecks = ['goal_repair', 'fact_preservation', 'unsupported_additions', 'pov']
 
@@ -177,7 +198,12 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
           )
       if (!input.holderId && identities.length > 1)
         throw new ToolError('NEEDS_CHECK', '存在同名视角人物，请指定 holderId。')
-      const task = { ...input, holderId: input.holderId ?? identities[0]?.id, id: run.taskId, projectId: run.projectId }
+      const task = {
+        ...input,
+        holderId: input.holderId ?? identities[0]?.id,
+        id: run.taskId,
+        projectId: run.projectId,
+      }
       validEvidence(run, task, input.evidenceIds)
       return { output: task }
     },
@@ -187,7 +213,11 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
     version: '1.0.0',
     source: 'server/memory.ts:searchMemory',
     effect: 'read',
-    input: z.object({ query: z.string(), limit: z.number().int().min(1).max(100).default(12), view: viewSchema }),
+    input: z.object({
+      query: z.string(),
+      limit: z.number().int().min(1).max(100).default(12),
+      view: viewSchema,
+    }),
     output: z.object({
       evidence: z.array(evidenceSchema),
       excluded: z.array(exclusionSchema),
@@ -215,7 +245,9 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
     input: z.object({ query: z.string(), view: viewSchema }),
     output: selectionSchema,
     async execute(input, { run }) {
-      return { output: await selectSettings(run.projectId, input.query, input.view) }
+      return {
+        output: await selectSettings(run.projectId, input.query, input.view),
+      }
     },
   })
   register({
@@ -235,16 +267,27 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
     version: '1.0.0',
     source: 'server/harness/evidence.ts',
     effect: 'read',
-    input: z.object({ evidenceIds: z.array(z.string()), location: rangeSchema.optional() }),
-    output: z.object({ evidence: z.array(evidenceSchema), missing: z.array(z.string()) }),
+    input: z.object({
+      evidenceIds: z.array(z.string()),
+      location: rangeSchema.optional(),
+    }),
+    output: z.object({
+      evidence: z.array(evidenceSchema),
+      missing: z.array(z.string()),
+    }),
     execute(input, { run }) {
       const task = taskOf(run)
       const ids = [...new Set(input.evidenceIds)]
       validEvidence(run, task, ids)
       const evidence = ids.map((id) => readEvidence(run.projectId, id))
       if (input.location)
-        evidence.push(chapterEvidence(run.projectId, task.chapterId, input.location.start, input.location.end))
-      return { output: { evidence, missing: [] }, status: evidence.length ? 'ok' : 'pending' }
+        evidence.push(
+          chapterEvidence(run.projectId, task.chapterId, input.location.start, input.location.end),
+        )
+      return {
+        output: { evidence, missing: [] },
+        status: evidence.length ? 'ok' : 'pending',
+      }
     },
   })
   const planSchema = z.object({
@@ -267,7 +310,8 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
     execute(_input, { run }) {
       const task = taskOf(run)
       const chapter = getChapter(run.projectId, task.chapterId)
-      if (chapter.revision !== task.baseRevision) throw new ToolError('VERSION_CONFLICT', '规划时正文版本已变化。')
+      if (chapter.revision !== task.baseRevision)
+        throw new ToolError('VERSION_CONFLICT', '规划时正文版本已变化。')
       const evidenceIds = [...new Set([...task.evidenceIds, ...taskEvidence(run).map((e) => e.id)])]
       validEvidence(run, task, evidenceIds)
       return {
@@ -290,19 +334,42 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
     source: 'server/harness/adapters.ts',
     effect: 'generate',
     estimateInputTokens: (_input, run) =>
-      estimateTokens(JSON.stringify({ task: run.state.task, plan: run.state.plan, evidence: taskEvidence(run) })) + 350,
-    input: z.object({ manualReplacement: z.string().optional(), rationale: z.string().default('作者手工候选') }),
-    output: z.object({ candidate: candidateSchema.nullable(), reason: z.string() }),
+      estimateTokens(
+        JSON.stringify({
+          task: run.state.task,
+          plan: run.state.plan,
+          evidence: taskEvidence(run),
+        }),
+      ) + 350,
+    input: z
+      .object({
+        manualReplacement: z.string().optional(),
+        patches: z.array(patchSchema).min(1).max(100).optional(),
+        parentCandidateId: z.string().optional(),
+        rationale: z.string().default('作者手工候选'),
+      })
+      .refine((i) => !(i.patches && i.manualReplacement !== undefined), '不能同时提供补丁和整段替换'),
+    output: z.object({
+      candidate: candidateSchema.nullable(),
+      reason: z.string(),
+    }),
     async execute(input, context) {
       const { run } = context
       const task = taskOf(run)
       const chapter = getChapter(run.projectId, task.chapterId)
       planSchema.parse(run.state.plan)
-      if (chapter.revision !== task.baseRevision) throw new ToolError('VERSION_CONFLICT', '生成时正文版本已变化。')
+      if (chapter.revision !== task.baseRevision)
+        throw new ToolError('VERSION_CONFLICT', '生成时正文版本已变化。')
       const original = chapter.content.slice(task.range.start, task.range.end)
+      const previous = (run.state.proposal as { candidate?: Candidate } | undefined)?.candidate
+      if (input.parentCandidateId && previous?.id !== input.parentCandidateId)
+        throw new ToolError('VERSION_CONFLICT', '父候选不是当前候选。')
+      if (context.actor === 'policy' && !input.patches)
+        throw new ToolError('INVALID_INPUT', '策略须直接提交补丁。')
       const generatorModel = adapters.generator.modelVersion
-      const result =
-        input.manualReplacement === undefined
+      const result = input.patches
+        ? { value: input.patches, usage: undefined }
+        : input.manualReplacement === undefined
           ? await adapters.generator.propose({ task, original, evidence: taskEvidence(run) }, context)
           : {
               value: [
@@ -317,17 +384,36 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
               ],
             }
       assertActive(context.signal)
-      run.modelVersions.generator = input.manualReplacement === undefined ? generatorModel : 'author'
+      const origin =
+        context.actor === 'policy'
+          ? 'policy'
+          : input.patches || input.manualReplacement !== undefined
+            ? 'author'
+            : 'adapter'
+      run.modelVersions.generator =
+        origin === 'adapter'
+          ? generatorModel
+          : origin === 'policy'
+            ? (run.modelVersions.policy ?? 'external-policy')
+            : 'author'
       if (!result)
-        return { output: { candidate: null, reason: '语义生成器未配置，可填写候选文本后检查。' }, status: 'pending' }
+        return {
+          output: {
+            candidate: null,
+            reason: '语义生成器未配置，可填写候选文本后检查。',
+          },
+          status: 'pending',
+        }
       const candidate: Candidate = {
         id: sql.id(),
         taskId: task.id,
         chapterId: task.chapterId,
         baseRevision: task.baseRevision,
         patches: result.value,
-        generator: input.manualReplacement === undefined ? adapters.generator.version : 'author',
+        generator: origin === 'adapter' ? adapters.generator.version : origin,
         modelVersion: run.modelVersions.generator,
+        origin,
+        parentCandidateId: previous?.id,
       }
       applyPatches(chapter.content, candidate.patches, task.range)
       validEvidence(
@@ -335,7 +421,11 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
         task,
         candidate.patches.flatMap((p) => p.evidenceIds),
       )
-      return { output: { candidate, reason: '候选补丁已定位，等待检查与作者采纳。' }, usage: result.usage }
+      delete run.state.verification
+      return {
+        output: { candidate, reason: '候选补丁已定位，等待检查与作者采纳。' },
+        usage: result.usage,
+      }
     },
   })
   register({
@@ -352,12 +442,17 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
           evidence: taskEvidence(run),
         }),
       ) + 500,
-    input: z.object({ patchIds: z.array(z.string()).optional() }),
+    input: z.object({
+      patchIds: z.array(z.string()).optional(),
+      candidateId: z.string().optional(),
+    }),
     output: verificationSchema,
     async execute(input, context) {
       const { run } = context
       const task = taskOf(run)
       const candidate = candidateOf(run)
+      if (input.candidateId && input.candidateId !== candidate.id)
+        throw new ToolError('VERSION_CONFLICT', '候选已更新。')
       const chapter = getChapter(run.projectId, task.chapterId)
       const checkerModel = adapters.checker.modelVersion ?? adapters.checker.version
       const patches = selectedPatches(candidate, input.patchIds)
@@ -367,7 +462,9 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
         detail,
         evidenceIds: [],
       })
-      const program: Check[] = [check('base_revision', chapter.revision === candidate.baseRevision, '正文版本比较')]
+      const program: Check[] = [
+        check('base_revision', chapter.revision === candidate.baseRevision, '正文版本比较'),
+      ]
       let after = chapter.content
       try {
         after = applyPatches(chapter.content, patches, task.range)
@@ -378,12 +475,19 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
       program.push(
         check(
           'preserve_literals',
-          task.preserve.every((s) => after.includes(s)),
+          [
+            ...task.preserve,
+            ...(task.constraints ?? []).filter((c) => c.type === 'literal').map((c) => c.text),
+          ].every((s) => after.includes(s)),
           '逐字保留项；语义保持单独记录',
         ),
       )
       program.push(
-        check('target_length', !task.targetWords || after.length <= task.targetWords * 1.3, '目标篇幅上限 130%'),
+        check(
+          'target_length',
+          !task.targetWords || after.length <= task.targetWords * 1.3,
+          '目标篇幅上限 130%',
+        ),
       )
       try {
         validEvidence(run, task, [...task.evidenceIds, ...patches.flatMap((p) => p.evidenceIds)])
@@ -391,7 +495,11 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
       } catch (error) {
         program.push(check('citation_format_and_version', false, (error as Error).message))
       }
-      let semantic: Check[] = pendingChecks.map((name) => ({
+      const expectedChecks = [
+        ...pendingChecks,
+        ...(task.constraints ?? []).filter((c) => c.type !== 'literal').map((c) => `constraint:${c.id}`),
+      ]
+      let semantic: Check[] = expectedChecks.map((name) => ({
         name,
         status: 'pending',
         detail: '语义检查器未配置，等待模型或作者核验。',
@@ -400,14 +508,20 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
       let usage: { inputTokens: number; outputTokens: number } | undefined
       if (program.every((c) => c.status === 'pass')) {
         const result = await adapters.checker.verify(
-          { task, candidate: { ...candidate, patches }, before: chapter.content, after, evidence: taskEvidence(run) },
+          {
+            task,
+            candidate: { ...candidate, patches },
+            before: chapter.content,
+            after,
+            evidence: taskEvidence(run),
+          },
           context,
         )
         assertActive(context.signal)
         if (result) {
           usage = result.usage
           const known = new Set(taskEvidence(run).map((e) => e.id))
-          semantic = pendingChecks.map((name) => {
+          semantic = expectedChecks.map((name) => {
             const checks = result.value.filter((c) => c.name === name)
             const value = checks.length === 1 ? checks[0] : undefined
             if (!value || value.evidenceIds.some((id) => !known.has(id)))
@@ -444,6 +558,28 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
             ? 'pending'
             : 'pass',
         checkerVersion: adapters.checker.version,
+        factDiff: [
+          ...task.preserve.map((text, i) => ({
+            id: `literal-${i}`,
+            before: chapter.content.includes(text),
+            after: after.includes(text),
+            status: after.includes(text) ? ('pass' as const) : ('fail' as const),
+            detail: text,
+          })),
+          ...(task.constraints ?? []).map((c) => ({
+            id: c.id,
+            before: c.type === 'literal' ? chapter.content.includes(c.text) : null,
+            after: c.type === 'literal' ? after.includes(c.text) : null,
+            status:
+              c.type === 'literal'
+                ? after.includes(c.text)
+                  ? ('pass' as const)
+                  : ('fail' as const)
+                : (semantic.find((check) => check.name === `constraint:${c.id}`)?.status ??
+                  ('pending' as const)),
+            detail: c.text,
+          })),
+        ],
       }
       run.modelVersions.checker = checkerModel
       return { output, usage }
@@ -458,7 +594,10 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
       candidateId: z.string(),
       patchIds: z.array(z.string()).min(1),
       acknowledgePending: z.boolean().default(false),
-      authorEvaluation: z.object({ rating: z.number().int().min(1).max(5).optional(), note: z.string().default('') }),
+      authorEvaluation: z.object({
+        rating: z.number().int().min(1).max(5).optional(),
+        note: z.string().default(''),
+      }),
     }),
     output: commitSchema,
     execute(input, context) {
@@ -476,7 +615,10 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
           JSON.stringify(verification.patchIds) !== JSON.stringify(patches.map((p) => p.id).sort())
         )
           throw new ToolError('VERIFICATION_FAILED', '请先检查本次选择的补丁组合。')
-        if (verification.status === 'fail' || (verification.status === 'pending' && !input.acknowledgePending))
+        if (
+          verification.status === 'fail' ||
+          (verification.status === 'pending' && !input.acknowledgePending)
+        )
           throw new ToolError('VERIFICATION_FAILED', '检查失败，或语义待检查尚未由作者明确确认。')
         validEvidence(run, task, [
           ...task.evidenceIds,
@@ -508,7 +650,11 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
           revision: getChapter(run.projectId, chapter.id).revision,
           historyId,
           appliedPatchIds: patches.map((p) => p.id),
-          before: { title: chapter.title, content: chapter.content, summary: chapter.summary },
+          before: {
+            title: chapter.title,
+            content: chapter.content,
+            summary: chapter.summary,
+          },
         }
       })
       return {
@@ -558,7 +704,10 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
           commit.before.content,
           commit.before.summary,
         )
-        return { chapterId: chapter.id, revision: getChapter(context.run.projectId, chapter.id).revision }
+        return {
+          chapterId: chapter.id,
+          revision: getChapter(context.run.projectId, chapter.id).revision,
+        }
       })
       return {
         output,
@@ -622,7 +771,14 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
         changes:
           digest(before) === digest(memoryScope(input.kind, input.itemId))
             ? []
-            : [{ kind: input.kind, id: input.itemId, before, after: memoryScope(input.kind, input.itemId) }],
+            : [
+                {
+                  kind: input.kind,
+                  id: input.itemId,
+                  before,
+                  after: memoryScope(input.kind, input.itemId),
+                },
+              ],
       }
     },
   })
@@ -694,7 +850,41 @@ export function createRegistry(adapters: Adapters = defaultAdapters()) {
       }
     },
   })
+  registry.register({
+    name: 'revision.preview',
+    version: '1.0.0',
+    source: 'server/harness/tools.ts',
+    effect: 'read',
+    input: z.object({ candidateId: z.string().optional() }),
+    output: z.object({
+      candidateId: z.string(),
+      before: z.string(),
+      after: z.string(),
+      patches: z.array(patchSchema),
+    }),
+    execute(input, { run }) {
+      const task = taskOf(run),
+        candidate = candidateOf(run),
+        chapter = getChapter(run.projectId, task.chapterId)
+      if (
+        candidate.baseRevision !== chapter.revision ||
+        (input.candidateId && input.candidateId !== candidate.id)
+      )
+        throw new ToolError('VERSION_CONFLICT', '候选或正文已更新。')
+      const after = applyPatches(chapter.content, candidate.patches, task.range)
+      const delta = candidate.patches.reduce((n, p) => n + p.replacement.length - p.original.length, 0)
+      return {
+        output: {
+          candidateId: candidate.id,
+          before: chapter.content.slice(task.range.start, task.range.end),
+          after: after.slice(task.range.start, task.range.end + delta),
+          patches: candidate.patches,
+        },
+      }
+    },
+  })
   registerImpactAndCompact(registry, adapters)
+  registerTaskTools(registry, adapters)
   return registry
 }
 
@@ -723,7 +913,11 @@ function registerImpactAndCompact(registry: ToolRegistry, adapters: Adapters) {
         relation: string
         evidenceIds: string[]
       }> = []
-      const explicit = sql.all<{ target_chapter_id: string; relation: string; evidence_ids: string }>(
+      const explicit = sql.all<{
+        target_chapter_id: string
+        relation: string
+        evidence_ids: string
+      }>(
         `SELECT * FROM harness_dependencies WHERE project_id=? AND (source_id=? OR source_id IN (SELECT item_id FROM source_bindings WHERE chapter_id=?))`,
         run.projectId,
         input.chapterId,
@@ -753,9 +947,18 @@ function registerImpactAndCompact(registry: ToolRegistry, adapters: Adapters) {
       const participants = sql
         .all<{
           participants: string
-        }>('SELECT participants FROM events WHERE project_id=? AND chapter_id=?', run.projectId, input.chapterId)
+        }>(
+          'SELECT participants FROM events WHERE project_id=? AND chapter_id=?',
+          run.projectId,
+          input.chapterId,
+        )
         .flatMap((e) => JSON.parse(e.participants) as string[])
-      for (const event of sql.all<{ chapter_id: string; participants: string; id: string; title: string }>(
+      for (const event of sql.all<{
+        chapter_id: string
+        participants: string
+        id: string
+        title: string
+      }>(
         'SELECT chapter_id,participants,id,title FROM events WHERE project_id=? AND chapter_id IS NOT NULL AND chapter_id<>?',
         run.projectId,
         input.chapterId,
@@ -771,7 +974,9 @@ function registerImpactAndCompact(registry: ToolRegistry, adapters: Adapters) {
       return {
         output: {
           affected: [
-            ...new Map(affected.map((item) => [`${item.chapterId}:${item.certainty}:${item.relation}`, item])).values(),
+            ...new Map(
+              affected.map((item) => [`${item.chapterId}:${item.certainty}:${item.relation}`, item]),
+            ).values(),
           ],
         },
       }
@@ -799,7 +1004,8 @@ function registerImpactAndCompact(registry: ToolRegistry, adapters: Adapters) {
       const selection = await selectSettings(context.run.projectId, '', input.view)
       for (const item of selection.items) {
         const tags = memoryScope(item.kind, item.id).tags ?? []
-        if (tags.length || ['fact', 'event', 'foreshadowing', 'entity'].includes(item.kind)) item.priority += 20
+        if (tags.length || ['fact', 'event', 'foreshadowing', 'entity'].includes(item.kind))
+          item.priority += 20
       }
       const packed = packContext(selection, input.tokenBudget)
       let text = packed.text
@@ -813,7 +1019,10 @@ function registerImpactAndCompact(registry: ToolRegistry, adapters: Adapters) {
             context,
           )
           assertActive(context.signal)
-          if (estimateTokens(result.text) > input.tokenBudget || result.evidenceIds.some((id) => !ids.includes(id)))
+          if (
+            estimateTokens(result.text) > input.tokenBudget ||
+            result.evidenceIds.some((id) => !ids.includes(id))
+          )
             throw new ToolError('INVALID_OUTPUT', '压缩结果超出预算或引用范围。')
           text = result.text
           ids = result.evidenceIds

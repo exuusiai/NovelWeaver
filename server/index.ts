@@ -11,6 +11,7 @@ import { storyRouter } from './routes/story.ts'
 import { ingestRouter } from './routes/ingest.ts'
 import { generateRouter } from './routes/generate.ts'
 import { harnessRouter } from './routes/harness.ts'
+import { tasksRouter } from './routes/tasks.ts'
 import { statsRouter } from './routes/stats.ts'
 import { recoverInterruptedJobs } from './routes/analysis-service.ts'
 import { startEmbeddingSweeper } from './embeddings.ts'
@@ -30,6 +31,7 @@ app.use(ingestRouter)
 app.use(generateRouter)
 app.use(statsRouter)
 app.use(harnessRouter)
+app.use(tasksRouter)
 
 recoverInterruptedJobs()
 startBackupScheduler()

@@ -20,7 +20,10 @@
     "start": "NODE_ENV=production tsx server/index.ts",
     "eval:harness": "tsx eval/run-harness-eval.ts",
     "harness:schemas": "tsx eval/export-harness-schemas.ts",
-    "harness:replay": "tsx eval/replay-harness.ts"
+    "harness:replay": "tsx eval/replay-harness.ts",
+    "eval:tasks": "tsx eval/run-task-eval.ts",
+    "tasks:bridge": "tsx eval/task-env-bridge.ts",
+    "tasks:schemas": "tsx eval/export-task-contracts.ts"
   },
   "dependencies": {
     "@xyflow/react": "^12.9.2",

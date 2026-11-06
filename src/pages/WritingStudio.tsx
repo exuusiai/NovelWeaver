@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Type, Maximize2, Bookmark, BookmarkCheck, BookOpen, Check, ChevronDown, Copy, EyeOff, ChevronLeft, ChevronRight, Eye, FilePlus2, Filter, FolderPlus, History, ListTree, Loader2, PanelRightClose, Pencil, Pin, PinOff, RotateCcw, Save, ShieldAlert, Sparkles, Target, Trash2, WandSparkles } from 'lucide-react'
 import { HarnessPanel } from '../components/HarnessPanel'
+import { TaskPanel } from '../components/TaskPanel'
 import { DiffView } from '../components/DiffView'
 import { api, patch, post, remove } from '../api'
 import { useNavigate } from 'react-router-dom'
@@ -343,13 +344,13 @@ export function WritingStudio() {
         buffer = lines.pop() || ''
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
-          let event: { type: string; text?: string; generationId?: string; output?: string; model?: string; citations?: GenerationResult['citations']; contextReport?: GenerationResult['contextReport']; message?: string }
+          let event: { type: string; text?: string; generationId?: string; output?: string; model?: string; citations?: GenerationResult['citations']; contextReport?: GenerationResult['contextReport']; executionStatus?: GenerationResult['executionStatus']; message?: string }
           try { event = JSON.parse(line.slice(6)) } catch { continue }
           if (event.type === 'delta' && event.text) {
             const text = event.text
             setVariants((current) => current.map((item, index) => index === slot ? { ...item, output: item.output + text } : item))
           } else if (event.type === 'done') {
-            setVariants((current) => current.map((item, index) => index === slot ? { generationId: event.generationId, output: event.output || '', model: event.model || '', citations: event.citations || [], contextReport: event.contextReport, chapterId: draft.id, task, selectionSnapshot: item.selectionSnapshot } : item))
+            setVariants((current) => current.map((item, index) => index === slot ? { generationId: event.generationId, output: event.output || '', model: event.model || '', citations: event.citations || [], contextReport: event.contextReport, executionStatus: event.executionStatus, chapterId: draft.id, task, selectionSnapshot: item.selectionSnapshot } : item))
             finished = true
           } else if (event.type === 'error') throw new Error(event.message || '生成失败。')
         }
@@ -368,7 +369,7 @@ export function WritingStudio() {
     try {
       const [context, precheck] = await Promise.all([
         // 与实际生成完全同一份编辑快照：未保存正文 + 当前细纲 + upto 视角
-        post<{ report: ContextReport }>('/api/ai/context', { projectId, chapterId: draft.id, prompt, tokenBudget: 10000, chapterContent: draft.content, chapterOutline: draft.detailed_outline || undefined, scope: 'upto' }),
+        post<{ report: ContextReport }>('/api/ai/context', { projectId, task, chapterId: draft.id, prompt, chapterContent: draft.content, chapterOutline: draft.detailed_outline || undefined, scope: 'upto' }),
         api<{ issues: PrecheckIssue[] }>(`/api/chapters/${draft.id}/precheck`).catch(() => ({ issues: [] as PrecheckIssue[] })),
       ])
       previewSnapshotRef.current = snapshotOf({ ...draft, content: draft.content } as Chapter); setContextReport(context.report); setPrecheckIssues(precheck.issues)
@@ -462,6 +463,7 @@ export function WritingStudio() {
     }
   }
   const replaceSelection = () => {
+    if (currentResult?.executionStatus === 'pending') return
     // 优先用候选上绑定的生成时选区快照——生成后作者改选了 B 也不会把 A 的结果写进 B
     const record = currentResult?.selectionSnapshot ?? selectionRef.current
     if (!record || !draft || record.chapterId !== draft.id) { setAdoptionNotice('该候选没有绑定的选区（或选区来自其他章节）。请选中段落后重新生成。'); return }
@@ -484,6 +486,7 @@ export function WritingStudio() {
   }
 
   const appendResult = async () => {
+    if (currentResult?.executionStatus === 'pending') return
     if (!draft || !currentResult?.output.trim()) return
     if (currentResult.chapterId && currentResult.chapterId !== draft.id) { setAdoptionNotice('该结果属于其他章节，已阻止追加——请切换回原章节采纳。'); return }
     if (currentResult.task === 'chapter_outline') { setAdoptionNotice('这是细纲结果，请点「放入本章细纲」。'); return }
@@ -558,6 +561,8 @@ export function WritingStudio() {
       </>}
     </section>
     {panelOpen ? <aside className="ai-panel"><header><div><WandSparkles size={18} /><div><strong>创作 Agent</strong><span>{panelPinned ? '已固定在写作区' : '悬浮面板'}</span></div></div><span className="agent-panel-actions"><IconButton label={panelPinned ? '取消固定助手' : '固定助手'} onClick={() => setPanelPinned((value) => !value)}>{panelPinned ? <Pin size={17} /> : <PinOff size={17} />}</IconButton><IconButton label="收起助手" onClick={() => setPanelOpen(false)}><PanelRightClose size={18} /></IconButton></span></header>
+      <TaskPanel projectId={projectId} chapter={draft} />
+      <div id="revision-panel" />
       {draft && <HarnessPanel key={draft.id} projectId={projectId} chapter={draft} selection={selectionRef.current?.chapterId === draft.id ? selectionRef.current : null} prepare={async () => {
         if (!await save()) return null
         return draftRef.current
@@ -582,8 +587,8 @@ export function WritingStudio() {
         <div className="result-meta"><span>{currentResult.model || (generating ? '正在生成…' : '')}</span><span>{currentResult.citations.length} 条记忆证据</span></div>
         <div style={{ fontSize: reader.fontSize - 1, lineHeight: reader.lineHeight }}><MarkdownLike text={currentResult.output || (generating ? '…' : '')} citations={currentResult.citations} /></div>
         {currentResult.task === 'chapter_outline' || task === 'chapter_outline'
-          ? <Button variant="secondary" disabled={generating || !currentResult.output.trim()} onClick={() => { if (!draft) return; const cleaned = cleanAdoptable(currentResult.output); setDraft({ ...draft, detailed_outline: cleaned }); setOutlineEditing(true); setAdoptionNotice('已放入「本章细纲」编辑框，确认无误后点保存细纲落盘。') }}>放入「本章细纲」</Button>
-          : <><Button variant="secondary" onClick={appendResult} disabled={generating || !currentResult.output.trim() || currentResult.chapterId !== draft?.id || Boolean(currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId))} title={currentResult.chapterId !== draft?.id ? '该结果属于其他章节，切换回去再采纳' : Boolean(currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId)) ? '该版本已追加' : ''}>{currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId) ? '已追加' : `追加「${variantLabel(activeVariant)}」到正文`}</Button>{selection && <Button variant="secondary" onClick={replaceSelection} disabled={generating || !currentResult.output.trim()} title="把生成结果替换到正文中选中的段落位置">替换选中段落</Button>}{undoAdoptRef.current && <Button variant="ghost" onClick={undoAdoption}>撤销采纳</Button>}</>}
+          ? <Button variant="secondary" disabled={generating || currentResult.executionStatus === 'pending' || !currentResult.output.trim()} onClick={() => { if (!draft) return; const cleaned = cleanAdoptable(currentResult.output); setDraft({ ...draft, detailed_outline: cleaned }); setOutlineEditing(true); setAdoptionNotice('已放入「本章细纲」编辑框，确认无误后点保存细纲落盘。') }}>放入「本章细纲」</Button>
+          : <><Button variant="secondary" onClick={appendResult} disabled={generating || currentResult.executionStatus === 'pending' || !currentResult.output.trim() || currentResult.chapterId !== draft?.id || Boolean(currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId))} title={currentResult.chapterId !== draft?.id ? '该结果属于其他章节，切换回去再采纳' : Boolean(currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId)) ? '该版本已追加' : ''}>{currentResult?.generationId && adoptedIdsRef.current.has(currentResult.generationId) ? '已追加' : `追加「${variantLabel(activeVariant)}」到正文`}</Button>{selection && <Button variant="secondary" onClick={replaceSelection} disabled={generating || currentResult.executionStatus === 'pending' || !currentResult.output.trim()} title="把生成结果替换到正文中选中的段落位置">替换选中段落</Button>}{undoAdoptRef.current && <Button variant="ghost" onClick={undoAdoption}>撤销采纳</Button>}</>}
         {adoptionNotice && <p className={`adoption-notice ${adoptionNotice.includes('保存到服务端失败') ? 'error' : ''}`}>{adoptionNotice}</p>}
       </> : <div className="agent-placeholder"><Sparkles size={22} /><p>生成结果会出现在这里。可生成多个版本并排对比，再挑选追加。所有新增事实仍需在审查台确认。</p></div>}</div>
     </aside> : <button className="open-ai-panel" onClick={() => setPanelOpen(true)} title="打开创作 Agent"><Sparkles size={19} /></button>}

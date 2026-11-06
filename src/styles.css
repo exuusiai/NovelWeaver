@@ -1091,3 +1091,15 @@ h1, h2, h3, p { margin: 0; }
 .harness-checks [data-status=pending], .harness-status { color: #826329; }
 .harness-ack { display: flex; align-items: start; gap: 6px; }
 .harness-body pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.ai-panel { overflow-y: auto; }
+.ai-panel > * { flex-shrink: 0; }
+.ai-panel > header { position: sticky; top: 0; z-index: 2; background: #f7f7f3; }
+.ai-panel > .agent-result { flex: 0 0 auto; min-height: 120px; overflow: visible; }
+.task-panel { padding: 14px; border-bottom: 1px solid var(--line); }
+.task-panel > .field, .task-panel > .task-options { margin-top: 10px; }
+.task-panel > summary { cursor: pointer; margin-bottom: 12px; }
+.task-panel select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; background: var(--surface, #fff); color: inherit; }
+.task-options { display: flex; gap: 8px; flex-wrap: wrap; }
+.task-options > * { flex: 1; min-width: 120px; }
+.task-plan { border: 1px solid #ccc; border-radius: 6px; padding: 10px; font-size: 13px; }
+.task-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow-y: auto; font: inherit; }
