@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/novelweaver-harness-*"]
   pull_request:
 
 jobs:
@@ -25,3 +25,5 @@ jobs:
       - run: pnpm eval
         env:
           NOVELWEAVER_DATA_DIR: ':memory:'
+
+      - run: pnpm eval:harness

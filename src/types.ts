@@ -33,6 +33,8 @@ export interface Chapter {
   pov: string
   target_words: number
   updated_at: string
+  revision: number
+  story_tick?: number | null
   content_hash?: string
   analyzed_hash?: string
   excluded?: number

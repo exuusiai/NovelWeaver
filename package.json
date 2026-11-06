@@ -17,7 +17,10 @@
     "eval:baseline": "tsx eval/run-eval.ts --save-baseline",
     "eval:extraction": "tsx eval/run-extraction-eval.ts",
     "eval:generation": "tsx eval/run-generation-eval.ts",
-    "start": "NODE_ENV=production tsx server/index.ts"
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "eval:harness": "tsx eval/run-harness-eval.ts",
+    "harness:schemas": "tsx eval/export-harness-schemas.ts",
+    "harness:replay": "tsx eval/replay-harness.ts"
   },
   "dependencies": {
     "@xyflow/react": "^12.9.2",

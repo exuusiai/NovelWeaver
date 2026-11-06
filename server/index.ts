@@ -10,6 +10,7 @@ import { worldRouter } from './routes/world.ts'
 import { storyRouter } from './routes/story.ts'
 import { ingestRouter } from './routes/ingest.ts'
 import { generateRouter } from './routes/generate.ts'
+import { harnessRouter } from './routes/harness.ts'
 import { statsRouter } from './routes/stats.ts'
 import { recoverInterruptedJobs } from './routes/analysis-service.ts'
 import { startEmbeddingSweeper } from './embeddings.ts'
@@ -28,6 +29,7 @@ app.use(storyRouter)
 app.use(ingestRouter)
 app.use(generateRouter)
 app.use(statsRouter)
+app.use(harnessRouter)
 
 recoverInterruptedJobs()
 startBackupScheduler()
@@ -45,6 +47,8 @@ app.use((error: Error & { status?: number; issues?: unknown }, _req: express.Req
 })
 
 const host = process.env.HOST || '127.0.0.1'
-app.listen(port, host, () => console.log(`NovelWeaver server running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port} (${host === '0.0.0.0' ? 'LAN open' : 'loopback only'})`))
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  app.listen(port, host, () => console.log(`NovelWeaver server running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port} (${host === '0.0.0.0' ? 'LAN open' : 'loopback only'})`))
+}
 
 export { app }

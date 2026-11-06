@@ -1,3 +1,4 @@
+import { bindSources } from '../provenance.ts'
 import { db, sql } from '../db.ts'
 import { estimateTokens } from '../memory.ts'
 import { analyzeManuscript, characterNameVariants } from '../analyzer.ts'
@@ -91,7 +92,10 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
     : '正在写入候选设定、剧情线与事实摘要' })
   const candidateIds = replaceCandidates ? sql.all<{ id: string }>(`SELECT id FROM entities WHERE project_id = ? AND canon_status = 'candidate'
     AND (json_extract(data, '$.source') = 'model-analysis' OR summary LIKE '从导入文稿中出现%')`, projectId) : []
-  const entityIdByName = new Map<string, string>()
+  const entityIdByName = new Map<string, Set<string>>()
+  const indexIdentity=(name:string,id:string)=>entityIdByName.set(name,new Set([...(entityIdByName.get(name)??[]),id]))
+  const uniqueIdentity=(name:string)=>{const ids=[...(entityIdByName.get(name)??[])];return ids.length===1?ids[0]:undefined}
+  const ambiguousIdentities:string[]=[]
   const normalized = (value: string) => value.trim().toLowerCase()
   const degraded = result.failures.length + changedChapterIds.length > 0
   const transaction = db.transaction(() => {
@@ -108,27 +112,33 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
       sql.run("DELETE FROM story_facts WHERE project_id = ? AND canon_status = 'candidate'", projectId)
     }
     sql.all<{ id: string; type: string; name: string; data: string }>('SELECT id, type, name, data FROM entities WHERE project_id = ?', projectId).forEach((entity) => {
-      const addName = (name: string) => (entity.type === 'character' ? characterNameVariants(name) : new Set([normalized(name)])).forEach((variant) => entityIdByName.set(variant, entity.id))
+      const addName = (name: string) => (entity.type === 'character' ? characterNameVariants(name) : new Set([normalized(name)])).forEach((variant) => indexIdentity(variant, entity.id))
       addName(entity.name)
       try { const data = JSON.parse(entity.data); if (Array.isArray(data.aliases)) data.aliases.forEach((alias: unknown) => addName(String(alias))) } catch { /* legacy data may not be JSON */ }
     })
-    for (const entity of result.entities) {
+    for (const entity of changedChapterIds.length ? [] : result.entities) {
       const lookupNames = [entity.name, ...entity.aliases].flatMap((name) => entity.type === 'character' ? [...characterNameVariants(name)] : [normalized(name)])
-      const knownId = lookupNames.map((name) => entityIdByName.get(name)).find(Boolean)
+      const matchingIds=[...new Set(lookupNames.flatMap(name=>[...(entityIdByName.get(name)??[])]))]
+      const knownId=matchingIds.length===1?matchingIds[0]:undefined
+      if(matchingIds.length>1)ambiguousIdentities.push(entity.name)
+      let resolvedId=knownId
       const existing = knownId ? sql.get<{ id: string; canon_status: string; data: string; summary: string }>('SELECT id, canon_status, data, summary FROM entities WHERE project_id = ? AND id = ?', projectId, knownId) : undefined
       const priorData = existing ? (() => { try { return JSON.parse(existing.data) as Record<string, unknown> } catch { return {} } })() : {}
       const priorAliases = Array.isArray(priorData.aliases) ? priorData.aliases.map(String) : []
-      const data = { ...priorData, ...entity.data, aliases: [...new Set([...priorAliases, ...entity.aliases])], evidence: entity.evidence, source: existing && priorData.source === 'user-correction' ? 'user-correction' : 'model-analysis' }
+      const retainedData=priorData.source==='model-analysis'?Object.fromEntries(Object.entries(priorData).filter(([key])=>['contextScope','contextVolume','contextNearChapter','contextPriority','pinned'].includes(key))):priorData
+      const data = { ...retainedData, ...entity.data, aliases: [...new Set([...priorAliases, ...entity.aliases])], evidence: entity.evidence, source: existing && priorData.source === 'user-correction' ? 'user-correction' : 'model-analysis' }
       if (existing) {
-        lookupNames.forEach((name) => entityIdByName.set(name, existing.id))
+        lookupNames.forEach((name) => indexIdentity(name, existing.id))
         if (existing.canon_status === 'candidate') sql.run('UPDATE entities SET type=?, summary=?, data=?, confidence=?, updated_at=? WHERE id=?', entity.type, entity.summary, JSON.stringify(data), .8, stamp, existing.id)
       } else {
-        const id = sql.id(); lookupNames.forEach((name) => entityIdByName.set(name, id))
+        const id = sql.id(); resolvedId=id; lookupNames.forEach((name) => indexIdentity(name, id))
         sql.run(`INSERT INTO entities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, projectId, entity.type, entity.name, entity.summary, JSON.stringify(data), 'candidate', .8, null, stamp, stamp)
         sql.addMemory(projectId, 'entity', id, `${entity.name}：${entity.summary}\n${JSON.stringify(data)}`, entity.summary, `${entity.name} ${entity.type}`)
       }
-      const resolvedId = lookupNames.map((name) => entityIdByName.get(name)).find(Boolean)
-      if (resolvedId) lookupNames.forEach((name) => entityIdByName.set(name, resolvedId))
+      if (resolvedId) {
+        lookupNames.forEach((name) => indexIdentity(name, resolvedId!))
+        if (!existing || existing.canon_status === 'candidate') bindSources('entity',resolvedId,chapters.map(c=>c.id))
+      }
     }
     const eventIds = new Map<string, string>()
     for (const event of result.events) {
@@ -145,17 +155,22 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
       sql.run('INSERT INTO plotlines VALUES (?, ?, ?, ?, ?, ?, ?, ?)', plotId, projectId, plot.name, plot.type, plot.summary, plot.type === 'main' ? '#0c6f68' : '#b7613c', 'candidate', stamp)
       plot.eventTitles.forEach((title) => { const eventId = eventIds.get(title); if (eventId) sql.run('UPDATE events SET plotline_id=? WHERE id=?', plotId, eventId) })
     }
-    for (const relation of result.relations) {
-      const from = entityIdByName.get(normalized(relation.from)); const to = entityIdByName.get(normalized(relation.to))
+    for (const relation of changedChapterIds.length ? [] : result.relations) {
+      const from = uniqueIdentity(normalized(relation.from)); const to = uniqueIdentity(normalized(relation.to))
       if (!from || !to || from === to) continue
       const exists = sql.get<{ id: string; canon_status: string }>('SELECT id, canon_status FROM relations WHERE project_id=? AND from_entity_id=? AND to_entity_id=? AND type=?', projectId, from, to, relation.type)
       if (exists) {
         // 同型关系再次提取到：更新描述与证据（"勉强合作→生死之交"应反映最新），
         // 但作者已确认的正史关系不被模型结果改写
-        if (exists.canon_status !== 'canon') sql.run('UPDATE relations SET label=?, sentiment=?, strength=?, evidence=?, updated_at=? WHERE id=?', relation.label, relation.sentiment, Math.round(relation.strength), relation.evidence || '', stamp, exists.id)
+        if (exists.canon_status !== 'canon') {
+          sql.run('UPDATE relations SET label=?, sentiment=?, strength=?, evidence=?, updated_at=? WHERE id=?', relation.label, relation.sentiment, Math.round(relation.strength), relation.evidence || '', stamp, exists.id)
+          bindSources('relation',exists.id,chapters.map(c=>c.id))
+        }
       } else {
+        const relationId=sql.id()
         sql.run('INSERT INTO relations (id, project_id, from_entity_id, to_entity_id, type, label, sentiment, strength, valid_from, valid_to, created_at, canon_status, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          sql.id(), projectId, from, to, relation.type, relation.label, relation.sentiment, Math.round(relation.strength), '', '', stamp, 'candidate', relation.evidence || '')
+          relationId, projectId, from, to, relation.type, relation.label, relation.sentiment, Math.round(relation.strength), '', '', stamp, 'candidate', relation.evidence || '')
+        bindSources('relation',relationId,chapters.map(c=>c.id))
       }
     }
     const failedChapterIds = new Set(result.failures.flatMap((failure) => failure.chapterIds))
@@ -165,11 +180,11 @@ export async function analyzeProjectData(projectId: string, replaceCandidates = 
       const live = contentHash(sql.get<{ content: string }>('SELECT content FROM chapters WHERE id=?', chapter.id)?.content || '')
       if (snapshot && live === snapshot) sql.run('UPDATE chapters SET analyzed_hash=? WHERE id=?', snapshot, chapter.id)
     }
-    sql.run('INSERT INTO analysis_runs VALUES (?, ?, ?, ?, ?, ?)', sql.id(), projectId, degraded ? 'partial' : 'completed', getModelStatus().model, JSON.stringify({ entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, batches: result.batches, failures: result.failures }), stamp)
+    sql.run('INSERT INTO analysis_runs VALUES (?, ?, ?, ?, ?, ?)', sql.id(), projectId, degraded ? 'partial' : 'completed', getModelStatus().model, JSON.stringify({ entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, ambiguousIdentities, batches: result.batches, failures: result.failures }), stamp)
     sql.run('UPDATE projects SET updated_at=? WHERE id=?', stamp, projectId)
   })
   transaction()
-  if (jobId) updateAnalysisJob(jobId, { status: result.failures.length ? 'partial' : 'completed', stage: 'completed', progress: 100, message: degraded ? `分析完成，但 ${changedChapterIds.length} 个章节在分析期间被修改，已跳过写入；${result.failures.length} 个批次需要重试` : '分析完成', result: { entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, batches: result.batches, failures: result.failures, changedChapterIds } })
+  if (jobId) updateAnalysisJob(jobId, { status: result.failures.length ? 'partial' : 'completed', stage: 'completed', progress: 100, message: degraded ? `分析完成，但 ${changedChapterIds.length} 个章节在分析期间被修改，已跳过写入；${result.failures.length} 个批次需要重试` : '分析完成', result: { entities: result.entities.length, events: result.events.length, plotlines: result.plotlines.length, relations: result.relations.length, ambiguousIdentities, batches: result.batches, failures: result.failures, changedChapterIds } })
   return result
 }
 

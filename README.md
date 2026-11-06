@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Express-5-000000" alt="Express 5" />
   <img src="https://img.shields.io/badge/SQLite-FTS5%20trigram-003b57" alt="SQLite FTS5" />
   <img src="https://img.shields.io/badge/TypeScript-strict-3178c6" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/tests-72%20passed-2ea44f" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-104%20passed-2ea44f" alt="tests" />
   <img src="https://img.shields.io/badge/CI-GitHub%20Actions-2088ff" alt="ci" />
   <img src="https://img.shields.io/badge/%E8%AF%84%E6%B5%8B-%E5%9F%BA%E7%BA%BF%2B%E5%9B%9E%E5%BD%92%E9%97%A8-8b5cf6" alt="eval" />
 </p>
@@ -114,7 +114,7 @@
 ```bash
 pnpm install
 pnpm dev            # http://localhost:5173（API 4300，内置"雾港纪事"演示项目）
-pnpm test           # 72 个单测 / API / 冒烟 / 评测测试
+pnpm test           # 104 项通过，4 项真实语料测试按可用性跳过
 pnpm eval           # 检索评测报告；pnpm eval:baseline 锁基线
 pnpm eval:extraction  # 霍比特人切分校验 + 提取对照
 pnpm eval:generation  # 生成接地评测（需本地服务与 API 密钥）
@@ -144,6 +144,18 @@ SQLite + FTS5（WAL、外键级联、双 FTS 表 + 触发器）
 
 模型层：OpenAI 兼容网关（模型列表拉取 / usage 采集 / 错误诊断 / 推理模型兼容），无 Key 时降级为确定性本地规则
 ```
+
+## Harness 改稿闭环
+
+写作台右栏提供“一键润色与局部改稿”：定义修改目标和范围，预览可定位补丁，分别检查程序约束与语义判断，再由作者部分采纳、整体采纳、拒绝或撤销。正文采纳会保存历史、清空旧摘要、重建检索记忆并标记旧抽取来源过期。
+
+```bash
+pnpm eval:harness      # 原创合成故事的离线验收，默认零网络、零付费调用
+pnpm harness:schemas   # 导出工具、运行、快照和 JSONL Schema
+pnpm harness:replay snapshot.json  # 观察回放；--resume 在内存库继续
+```
+
+未配置语义适配器时明确显示待检查，可填写作者候选继续。Harness 模型接入需显式设置 `HARNESS_MODEL_ENABLED=1`，并关闭 `NOVELWEAVER_OFFLINE`。服务器配置见 [.env.server.example](.env.server.example)，完整接口、验收和服务器待办见 [本机交接文档](docs/handoff/local-stage.md)。
 
 ## 🔑 模型接入
 

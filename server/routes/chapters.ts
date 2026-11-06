@@ -80,10 +80,10 @@ chaptersRouter.post('/api/projects/:projectId/chapters', (req, res) => {
 chaptersRouter.patch('/api/chapters/:chapterId', (req, res) => {
   const current = sql.get<Record<string, unknown>>('SELECT * FROM chapters WHERE id = ?', req.params.chapterId)
   if (!current) return res.status(404).json({ error: '章节不存在。' })
-  const body = z.object({ title: z.string().optional(), content: z.string().optional(), summary: z.string().optional(), pov: z.string().optional(), status: z.string().optional(), targetWords: z.number().int().positive().optional(), position: z.number().int().nonnegative().optional(), detailedOutline: z.string().optional(), expectedUpdatedAt: z.string().optional() }).parse(req.body)
+  const body = z.object({ title: z.string().optional(), content: z.string().optional(), summary: z.string().optional(), pov: z.string().optional(), status: z.string().optional(), targetWords: z.number().int().positive().optional(), position: z.number().int().nonnegative().optional(), storyTick: z.number().int().nullable().optional(), detailedOutline: z.string().optional(), expectedUpdatedAt: z.string().optional(), baseRevision: z.number().int().positive().optional() }).parse(req.body)
   // 乐观并发控制：另一窗口已保存过（updated_at 前移）而本次还基于旧版本提交 → 409，
   // 绝不静默覆盖。客户端可带服务器新 updated_at 重试（明确选择"用我的版本"）。
-  if (body.expectedUpdatedAt && body.expectedUpdatedAt !== current.updated_at) {
+  if ((body.baseRevision !== undefined && body.baseRevision !== current.revision) || (body.expectedUpdatedAt && body.expectedUpdatedAt !== current.updated_at)) {
     return res.status(409).json({ error: '此章已在另一窗口修改，为防覆盖未保存本次更改。', conflict: true, serverChapter: sql.get(chapterSelect('WHERE c.id = ?'), req.params.chapterId) })
   }
   const outlineBefore = sql.get<{ content: string }>('SELECT content FROM chapter_outlines WHERE chapter_id=?', req.params.chapterId)?.content ?? ''
@@ -94,6 +94,7 @@ chaptersRouter.patch('/api/chapters/:chapterId', (req, res) => {
   }
   const contentChanged = body.content !== undefined && body.content !== current.content
   const positionChanged = body.position !== undefined && body.position !== current.position
+  const nextSummary = contentChanged && (body.summary === undefined || body.summary === current.summary) ? '' : body.summary ?? current.summary
   db.transaction(() => {
     if (body.detailedOutline !== undefined) {
       // 细纲与正文走同一条自动保存链路：作者不需要知道"细纲要单独存"。
@@ -102,15 +103,15 @@ chaptersRouter.patch('/api/chapters/:chapterId', (req, res) => {
       if (existing) sql.run("UPDATE chapter_outlines SET content=?, status=CASE WHEN status='archived' THEN status ELSE 'active' END, updated_at=? WHERE chapter_id=?", body.detailedOutline, sql.now(), req.params.chapterId)
       else sql.run('INSERT INTO chapter_outlines (project_id, chapter_id, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', current.project_id, req.params.chapterId, body.detailedOutline, 'active', sql.now(), sql.now())
     }
-    sql.run(`UPDATE chapters SET title=?, content=?, summary=?, pov=?, status=?, target_words=?, position=?, content_hash=?, updated_at=? WHERE id=?`,
-      body.title ?? current.title, body.content ?? current.content, body.summary ?? current.summary, body.pov ?? current.pov,
+    sql.run(`UPDATE chapters SET title=?, content=?, summary=?, pov=?, status=?, target_words=?, position=?, content_hash=?, story_tick=?, updated_at=? WHERE id=?`,
+      body.title ?? current.title, body.content ?? current.content, nextSummary, body.pov ?? current.pov,
       body.status ?? current.status, body.targetWords ?? current.target_words, body.position ?? current.position,
-      contentChanged ? contentHash(String(body.content ?? current.content)) : current.content_hash, sql.now(), req.params.chapterId)
+      contentChanged ? contentHash(String(body.content ?? current.content)) : current.content_hash, body.storyTick === undefined ? current.story_tick : body.storyTick, sql.now(), req.params.chapterId)
     if (contentChanged) {
       // 正文变更：结构化数据（实体/事件/事实）基于旧稿，标记该章分析结果过期；
       // analyzed_hash 置空后由分析中心展示"已过期"，重新分析完成时回写新 hash
       sql.run('UPDATE chapters SET analyzed_hash = ? WHERE id = ?', '', req.params.chapterId)
-      rebuildChapterMemory(String(current.project_id), req.params.chapterId, String(body.title ?? current.title), String(body.content), String(body.summary ?? current.summary ?? ''))
+      rebuildChapterMemory(String(current.project_id), req.params.chapterId, String(body.title ?? current.title), String(body.content), String(nextSummary))
     }
     if (positionChanged) normalizeChapterPositions(String(current.project_id))
     sql.run('UPDATE projects SET updated_at=? WHERE id=?', sql.now(), current.project_id)
@@ -136,9 +137,9 @@ chaptersRouter.post('/api/chapters/:chapterId/history/:historyId/restore', (req,
   db.transaction(() => {
     saveChapterHistory({ id: String(chapter.id), project_id: String(chapter.project_id), title: String(chapter.title), content: String(chapter.content), summary: String(chapter.summary ?? '') })
     sql.run(`UPDATE chapters SET title=?, content=?, summary=?, content_hash=?, analyzed_hash='', updated_at=? WHERE id=?`,
-      version.title, version.content, version.summary || String(chapter.summary ?? ''), contentHash(version.content), stamp, req.params.chapterId)
+      version.title, version.content, version.summary, contentHash(version.content), stamp, req.params.chapterId)
     // 细纲随正文回到同一版本：快照里有细纲才覆盖（老快照无细纲时保持现状）
-    if (version.detailed_outline) {
+    if (version.detailed_outline !== undefined) {
       const existingOutline = sql.get<{ chapter_id: string }>('SELECT chapter_id FROM chapter_outlines WHERE chapter_id=?', req.params.chapterId)
       if (existingOutline) sql.run('UPDATE chapter_outlines SET content=?, updated_at=? WHERE chapter_id=?', version.detailed_outline, stamp, req.params.chapterId)
       else sql.run('INSERT INTO chapter_outlines (project_id, chapter_id, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', chapter.project_id, req.params.chapterId, version.detailed_outline, 'active', stamp, stamp)
@@ -205,14 +206,15 @@ chaptersRouter.get('/api/chapters/:chapterId/precheck', (req, res) => {
 })
 
 chaptersRouter.post('/api/chapters/:chapterId/summary/rewrite', asyncRoute(async (req, res) => {
-  const current = sql.get<{ id: string; project_id: string; title: string; content: string; summary: string }>(
-    'SELECT id, project_id, title, content, summary FROM chapters WHERE id = ?', req.params.chapterId)
+  const current = sql.get<{ id: string; project_id: string; title: string; content: string; summary: string; revision: number }>(
+    'SELECT id, project_id, title, content, summary, revision FROM chapters WHERE id = ?', req.params.chapterId)
   if (!current) return res.status(404).json({ error: '章节不存在。' })
   if (current.content.replace(/\s/g, '').length < 40) return res.status(400).json({ error: '正文太短，先写一些内容再生成摘要。' })
   if (!getModelStatus().configured) {
     throw Object.assign(new Error('章节摘要重写需要模型 API；配置后可用。本地规则模式不会用截断冒充摘要。'), { status: 409, code: 'MODEL_REQUIRED' })
   }
   const summary = await summarizeWithModel(current.title, current.content)
+  if (sql.get<{revision:number}>('SELECT revision FROM chapters WHERE id=?',current.id)?.revision!==current.revision) return res.status(409).json({error:'摘要生成期间正文已变化，请重新生成。',code:'VERSION_CONFLICT'})
   const stamp = sql.now()
   db.transaction(() => {
     sql.run('UPDATE chapters SET summary=?, updated_at=? WHERE id=?', summary, stamp, current.id)

@@ -1,0 +1,146 @@
+{
+  "schemaVersion": "novelweaver.harness.eval.v1",
+  "dataOrigin": "synthetic",
+  "sourceFamilies": [
+    "synthetic-foglamp-01"
+  ],
+  "split": "test",
+  "paidApiCalls": 0,
+  "passed": 20,
+  "failed": 0,
+  "dimensions": {
+    "citationFormat": "program checks",
+    "semanticSupport": "deterministic mock with fixed text pairs",
+    "creativeQuality": "author evaluation only; real model evaluation pending"
+  },
+  "results": [
+    {
+      "id": "H01",
+      "name": "同名人物按实体 ID 与来源隔离",
+      "status": "pass"
+    },
+    {
+      "id": "H02",
+      "name": "未来秘密不进入前章角色上下文，缓存隔离",
+      "status": "pass"
+    },
+    {
+      "id": "H03",
+      "name": "倒叙与章节重排分别遵守故事时间和叙事顺序",
+      "status": "pass"
+    },
+    {
+      "id": "H04",
+      "name": "前文改动清理旧摘要、事实、检索块与引用",
+      "status": "pass"
+    },
+    {
+      "id": "H05",
+      "name": "润色闭环修复目标、保留事实并记录作者评价",
+      "status": "pass"
+    },
+    {
+      "id": "H06",
+      "name": "证据不足与语义未配置保留待检查，采纳须显式确认",
+      "status": "pass"
+    },
+    {
+      "id": "H07",
+      "name": "补丁版本冲突阻止覆盖",
+      "status": "pass"
+    },
+    {
+      "id": "H08",
+      "name": "暂时失败有限恢复，持续失败在上限停止",
+      "status": "pass"
+    },
+    {
+      "id": "H09",
+      "name": "重复采纳幂等且不同请求重用标识时报错",
+      "status": "pass"
+    },
+    {
+      "id": "H10",
+      "name": "撤销恢复正文与检索记忆，旧派生事实保持待复核",
+      "status": "pass"
+    },
+    {
+      "id": "H11",
+      "name": "部分采纳按所选补丁组合重新检查",
+      "status": "pass"
+    },
+    {
+      "id": "H12",
+      "name": "快照恢复交互、数据库、预算和随机状态；回放零工具执行",
+      "status": "pass"
+    },
+    {
+      "id": "H13",
+      "name": "超时、取消、暂停恢复与预算均有停止原因",
+      "status": "pass"
+    },
+    {
+      "id": "H14",
+      "name": "显式跨章依赖与预算压缩保留来源",
+      "status": "pass"
+    },
+    {
+      "id": "H15",
+      "name": "否定、对象、时间变化不按字符串包含判为兼容",
+      "status": "pass"
+    },
+    {
+      "id": "H16",
+      "name": "作者明确确认正史后重绑当前来源",
+      "status": "pass"
+    },
+    {
+      "id": "H17",
+      "name": "输入输出 Schema 错误有轨迹，写工具须有版本和幂等字段",
+      "status": "pass"
+    },
+    {
+      "id": "H18",
+      "name": "进程中断补全观察记录并保留已消耗预算",
+      "status": "pass"
+    },
+    {
+      "id": "H19",
+      "name": "模型漏检或无依据引用保留待检查",
+      "status": "pass"
+    },
+    {
+      "id": "H20",
+      "name": "检索证据不足时执行一次补查，同名视角需指定身份",
+      "status": "pass"
+    }
+  ],
+  "acceptedAt": "2026-11-06",
+  "timezone": "Asia/Shanghai",
+  "runtime": {
+    "node": "22.21.0",
+    "pnpm": "10.15.1",
+    "installation": "fresh directory, frozen lockfile"
+  },
+  "baseline": {
+    "commit": "480c578c0f642cb1d4b2813f6b7d59497978a930",
+    "testsPassed": 81,
+    "testsSkipped": 4,
+    "build": "pass"
+  },
+  "verification": {
+    "typecheck": "pass",
+    "testsPassed": 104,
+    "testsSkipped": 4,
+    "testFilesPassed": 16,
+    "build": "pass",
+    "retrieval": {
+      "recallAt8": 1,
+      "mrr": 0.943,
+      "baselineMrr": 0.946,
+      "tolerance": 0.02
+    },
+    "ui": "Chrome: candidate, pending semantic checks, explicit adoption, undo; isolated in-memory database",
+    "snapshotCli": "recorded replay and isolated resume pass"
+  }
+}

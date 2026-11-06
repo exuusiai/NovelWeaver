@@ -63,6 +63,8 @@ export function removeStalePlannedChapter(chapterId: string) {
 }
 
 export function rebuildChapterMemory(projectId: string, chapterId: string, title: string, content: string, summary: string) {
+  // Every caller (editor, restore and Harness commit) gets the same invalidation.
+  sql.run("UPDATE source_bindings SET validity='stale' WHERE chapter_id=? AND source_revision != (SELECT revision FROM chapters WHERE id=?)", chapterId, chapterId)
   const old = sql.all<{ id: string }>('SELECT id FROM memory_chunks WHERE source_type = ? AND source_id = ?', 'chapter', chapterId)
   old.forEach(({ id }) => sql.run('DELETE FROM memory_fts WHERE id = ?', id))
   sql.run('DELETE FROM memory_chunks WHERE source_type = ? AND source_id = ?', 'chapter', chapterId)

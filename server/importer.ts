@@ -315,7 +315,8 @@ export function summarize(content: string, max = 140) {
 }
 
 export function chunkText(content: string, size = 1200, overlap = 160) {
-  const clean = content.replace(/\n{3,}/g, '\n\n').trim()
+  // Keep internal whitespace byte-for-byte so every chunk remains locatable in the manuscript.
+  const clean = content.trim()
   const chunks: string[] = []
   for (let start = 0; start < clean.length; start += size - overlap) {
     chunks.push(clean.slice(start, start + size))

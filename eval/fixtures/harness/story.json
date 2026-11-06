@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "novelweaver.synthetic.v1",
+  "sourceFamilyId": "synthetic-foglamp-01",
+  "split": "test",
+  "title": "雾灯案（原创合成验收故事）",
+  "chapters": [
+    {"key":"opening","title":"蓝盒","storyTick":10,"content":"陆宁把铜钥匙放进蓝盒。他非常非常谨慎地关上盒盖。窗外的雨缓慢地慢慢落下。","summary":"陆宁把铜钥匙放进蓝盒。"},
+    {"key":"namesake","title":"同名旅客","storyTick":12,"content":"旅客陆宁把银钥匙藏进红盒。他与守灯人陆宁是两个不同的人。","summary":"同名旅客持有银钥匙。"},
+    {"key":"flashback","title":"五日前","storyTick":5,"content":"五日前，守灯人陆宁还没有见过铜钥匙。他在灯塔学习辨认航标。","summary":"陆宁尚未获得铜钥匙。"},
+    {"key":"secret","title":"灯底密信","storyTick":20,"content":"守灯人陆宁直到此刻才获知：蓝盒底部藏着密信，密信写着雾灯密码是七。","summary":"陆宁在故事时间二十才知晓雾灯密码是七。"}
+  ],
+  "task": {"goal":"删去非常非常的重复，润色节奏，保留铜钥匙与蓝盒。","preserve":["铜钥匙","蓝盒"],"allowedChanges":["措辞","节奏"],"pov":"陆宁"},
+  "golden": {
+    "patches":[{"find":"非常非常","replacement":"很","rationale":"删去程度副词重复。"},{"find":"缓慢地慢慢","replacement":"慢慢","rationale":"压缩重复的速度描写。"}],
+    "semanticReview":"人工可核验的固定文本对：主语、铜钥匙、蓝盒、放入与关盖动作均保留；更改仅涉及程度和速度副词；正文中没有密码、密信或旅客持有物。",
+    "forbiddenEarly":["雾灯密码是七","银钥匙","红盒"]
+  }
+}

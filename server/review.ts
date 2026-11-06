@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { sql } from './db.ts'
+import { memoryScope, visibilityReason } from './provenance.ts'
 import { parseModelJson } from './analyzer.ts'
 import { structuredCompletion } from './ai.ts'
 
@@ -37,14 +38,23 @@ export function precheckChapter(chapterId: string): PrecheckIssue[] {
 
 // 候选事实差异提取器：与既有正史或同口径候选冲突的事实不改写任何数据，
 // 只生成审查项交给作者裁决（架构预留边界 5 的落地）。
-// 兼容判定：值完全一致或互相包含视为口径细化，不算冲突。
+// Exact normalized equality is decidable. Containment requires semantic review;
+// negation, changed objects and story-time intervals never imply compatibility.
 const normalizeValue = (value: string) => value.trim().replace(/\s+/g, '').replace(/[。.!！?？~～]+$/, '')
-
-function valuesCompatible(a: string, b: string) {
-  const left = normalizeValue(a)
-  const right = normalizeValue(b)
-  if (!left || !right) return true
-  return left === right || left.includes(right) || right.includes(left)
+export function compareFactValues(a: string, b: string): 'equal' | 'different' | 'needs_review' {
+  const left = normalizeValue(a); const right = normalizeValue(b)
+  if (!left || !right) return 'needs_review'
+  if (left === right) return 'equal'
+  if (/(不|未|没|无|非|否|从未|不再)/.test(left) !== /(不|未|没|无|非|否|从未|不再)/.test(right)) return 'different'
+  return left.includes(right) || right.includes(left) ? 'needs_review' : 'different'
+}
+function sameFactScope(a: {id:string}, b: {id:string}) {
+  const left=memoryScope('fact',a.id);const right=memoryScope('fact',b.id)
+  if ((left.audience??'world')!==(right.audience??'world') || left.holderId!==right.holderId) return false
+  if (left.entityIds?.length && right.entityIds?.length && !left.entityIds.some(id=>right.entityIds!.includes(id))) return false
+  if (left.validToTick!==undefined && right.validFromTick!==undefined && left.validToTick<right.validFromTick) return false
+  if (right.validToTick!==undefined && left.validFromTick!==undefined && right.validToTick<left.validFromTick) return false
+  return true
 }
 
 function factConflicts(projectId: string): Array<{ category: string; severity: string; title: string; description: string; evidence: string[]; groupKey?: string }> {
@@ -53,6 +63,7 @@ function factConflicts(projectId: string): Array<{ category: string; severity: s
      LEFT JOIN chapters c ON c.id = f.source_chapter_id WHERE f.project_id = ?`, projectId)
   const groups = new Map<string, typeof rows>()
   for (const row of rows) {
+    if (visibilityReason(projectId,'fact',row.id,{audience:'author'})) continue
     const key = `${normalizeValue(row.subject)}|${normalizeValue(row.predicate)}`
     const group = groups.get(key)
     if (group) group.push(row)
@@ -66,9 +77,9 @@ function factConflicts(projectId: string): Array<{ category: string; severity: s
     const candidates = group.filter((row) => row.canon_status === 'candidate')
     for (const candidate of candidates) {
       for (const established of canon) {
-        if (valuesCompatible(candidate.value, established.value)) continue
+        if (!sameFactScope(candidate,established) || compareFactValues(candidate.value, established.value)==='equal') continue
         issues.push({
-          category: 'fact-conflict', severity: 'high',
+          category: compareFactValues(candidate.value,established.value)==='needs_review'?'fact-support-pending':'fact-conflict', severity: 'high',
           title: `候选事实与正史冲突：${candidate.subject}·${candidate.predicate}`,
           description: `正史记载「${established.value}」（来源：${established.chapter_title || '全局资料'}），新候选为「${candidate.value}」（来源：${candidate.chapter_title || '全局资料'}）。候选不会自动改写正史；请确认候选（覆盖口径）或废弃候选。`,
           evidence: [candidate.id, established.id],
@@ -78,9 +89,9 @@ function factConflicts(projectId: string): Array<{ category: string; severity: s
     if (canon.length) continue
     for (let i = 0; i < candidates.length; i += 1) {
       for (let j = i + 1; j < candidates.length; j += 1) {
-        if (valuesCompatible(candidates[i].value, candidates[j].value)) continue
+        if (!sameFactScope(candidates[i],candidates[j]) || compareFactValues(candidates[i].value, candidates[j].value)==='equal') continue
         issues.push({
-          category: 'fact-conflict', severity: 'medium',
+          category: compareFactValues(candidates[i].value,candidates[j].value)==='needs_review'?'fact-support-pending':'fact-conflict', severity: 'medium',
           title: `候选事实相互分歧：${candidates[i].subject}·${candidates[i].predicate}`,
           description: `「${candidates[i].value}」（来源：${candidates[i].chapter_title || '全局资料'}）与「${candidates[j].value}」（来源：${candidates[j].chapter_title || '全局资料'}）不一致。可能是不同时间点的状态变化，也可能是提取噪声，请确认当前有效口径。`,
           evidence: [candidates[i].id, candidates[j].id],

@@ -1077,3 +1077,17 @@ h1, h2, h3, p { margin: 0; }
 .direction-card strong { font-size: 12px; }
 .direction-card span { font-size: 10px; color: var(--muted); }
 .direction-card small { font-size: 9px; color: var(--amber); }
+
+.harness-panel { margin: 12px; border: 1px solid var(--border, #dcded8); border-radius: 10px; background: var(--surface, #fff); }
+.harness-panel > summary { padding: 12px; cursor: pointer; font-weight: 650; }
+.harness-body { display: grid; gap: 12px; padding: 0 12px 12px; font-size: 12px; }
+.harness-body .field, .harness-body label { min-width: 0; }
+.harness-body textarea, .harness-body input:not([type=checkbox]), .harness-body select { width: 100%; }
+.harness-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.harness-actions a { padding: 6px; color: #13766f; }
+.harness-patch { border-top: 1px solid #dcded8; padding-top: 10px; overflow-wrap: anywhere; }
+.harness-checks p { margin: 6px 0; overflow-wrap: anywhere; }
+.harness-checks [data-status=fail], .harness-error { color: #a5392e; }
+.harness-checks [data-status=pending], .harness-status { color: #826329; }
+.harness-ack { display: flex; align-items: start; gap: 6px; }
+.harness-body pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }

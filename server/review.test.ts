@@ -50,8 +50,9 @@ describe('候选事实差异提取器', () => {
     expect(conflict!.severity).toBe('medium')
   })
 
-  it('互相包含与完全一致不算冲突', () => {
+  it('包含关系保留语义待核验，完全一致不算冲突', () => {
     expect(issues.find((issue) => issue.title.includes('索林·身份'))).toBeUndefined()
+    expect(runReview(projectId).some(issue=>issue.category==='fact-support-pending' && issue.title.includes('索林·身份'))).toBe(true)
     expect(issues.find((issue) => issue.title.includes('甘道夫·职业'))).toBeUndefined()
   })
 

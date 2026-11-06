@@ -295,6 +295,8 @@ for (const statement of [
   "ALTER TABLE relations ADD COLUMN canon_status TEXT NOT NULL DEFAULT 'candidate'",
   "ALTER TABLE relations ADD COLUMN evidence TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE relations ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+  'ALTER TABLE chapters ADD COLUMN revision INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE chapters ADD COLUMN story_tick INTEGER',
 ]) {
   try { db.exec(statement) } catch { /* column already exists */ }
 }
@@ -345,6 +347,64 @@ function ensureFactSummaries() {
 }
 
 ensureFactSummaries()
+
+// Harness metadata lives beside the existing domain tables so old positional INSERTs
+// remain compatible. A revision is monotonic, including when identical text is restored.
+db.exec(`
+CREATE TABLE IF NOT EXISTS source_bindings (
+  kind TEXT NOT NULL, item_id TEXT NOT NULL, chapter_id TEXT NOT NULL,
+  source_revision INTEGER NOT NULL, validity TEXT NOT NULL DEFAULT 'current',
+  PRIMARY KEY(kind, item_id, chapter_id)
+);
+CREATE TABLE IF NOT EXISTS memory_scopes (
+  kind TEXT NOT NULL, item_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  metadata TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(kind, item_id)
+);
+CREATE TABLE IF NOT EXISTS harness_dependencies (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_kind TEXT NOT NULL, source_id TEXT NOT NULL, target_chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  relation TEXT NOT NULL, evidence_ids TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS harness_runs (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  payload TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS harness_evidence (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  locator TEXT NOT NULL, text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS harness_receipts (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, idempotency_key TEXT NOT NULL,
+  fingerprint TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(project_id, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS harness_snapshots (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES harness_runs(id) ON DELETE CASCADE,
+  payload TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_bindings_chapter ON source_bindings(chapter_id, validity);
+CREATE TRIGGER IF NOT EXISTS chapter_revision AFTER UPDATE OF content, title, summary, pov, position, story_tick ON chapters
+WHEN NEW.content != OLD.content OR NEW.title != OLD.title OR NEW.summary != OLD.summary
+ OR NEW.pov != OLD.pov OR NEW.position != OLD.position OR NEW.story_tick IS NOT OLD.story_tick
+BEGIN
+  UPDATE chapters SET revision=OLD.revision+1 WHERE id=NEW.id;
+  UPDATE source_bindings SET validity='stale' WHERE chapter_id=NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS chapter_deleted_sources AFTER DELETE ON chapters BEGIN
+  UPDATE source_bindings SET validity='missing' WHERE chapter_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS fact_source_insert AFTER INSERT ON story_facts WHEN NEW.source_chapter_id IS NOT NULL BEGIN
+  INSERT OR REPLACE INTO source_bindings SELECT 'fact', NEW.id, c.id, c.revision, 'current' FROM chapters c WHERE c.id=NEW.source_chapter_id;
+END;
+CREATE TRIGGER IF NOT EXISTS event_source_insert AFTER INSERT ON events WHEN NEW.chapter_id IS NOT NULL BEGIN
+  INSERT OR REPLACE INTO source_bindings SELECT 'event', NEW.id, c.id, c.revision, 'current' FROM chapters c WHERE c.id=NEW.chapter_id;
+END;
+CREATE TRIGGER IF NOT EXISTS entity_source_insert AFTER INSERT ON entities WHEN NEW.source_chapter_id IS NOT NULL BEGIN
+  INSERT OR REPLACE INTO source_bindings SELECT 'entity', NEW.id, c.id, c.revision, 'current' FROM chapters c WHERE c.id=NEW.source_chapter_id;
+END;
+INSERT OR IGNORE INTO source_bindings SELECT 'fact', f.id, c.id, c.revision, CASE WHEN c.content_hash != '' AND c.analyzed_hash != c.content_hash THEN 'stale' ELSE 'current' END FROM story_facts f JOIN chapters c ON c.id=f.source_chapter_id;
+INSERT OR IGNORE INTO source_bindings SELECT 'event', e.id, c.id, c.revision, CASE WHEN c.content_hash != '' AND c.analyzed_hash != c.content_hash THEN 'stale' ELSE 'current' END FROM events e JOIN chapters c ON c.id=e.chapter_id;
+INSERT OR IGNORE INTO source_bindings SELECT 'entity', e.id, c.id, c.revision, CASE WHEN c.content_hash != '' AND c.analyzed_hash != c.content_hash THEN 'stale' ELSE 'current' END FROM entities e JOIN chapters c ON c.id=e.source_chapter_id;
+`)
 
 export const sql = {
   now,

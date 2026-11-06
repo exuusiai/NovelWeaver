@@ -9,3 +9,16 @@ releases/*.tar.gz
 测试用文稿/
 eval/.api-test.local.json
 eval/.cache-embeddings-*.json
+
+# Local credentials, author data, model weights and evaluation outputs
+.env.*
+!.env.example
+!.env.server.example
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.safetensors
+*.gguf
+models/

@@ -29,7 +29,14 @@ export function buildProjectExport(projectId: string) {
       WHERE c.project_id=? ORDER BY h.created_at`, projectId),
     analysisRuns: sql.all('SELECT * FROM analysis_runs WHERE project_id = ? ORDER BY created_at', projectId),
     analysisJobs: sql.all('SELECT * FROM analysis_jobs WHERE project_id = ? ORDER BY created_at', projectId),
-    schemaVersion: 3,
+    sourceBindings: sql.all('SELECT * FROM source_bindings WHERE chapter_id IN (SELECT id FROM chapters WHERE project_id=?)',projectId),
+    memoryScopes: sql.all('SELECT * FROM memory_scopes WHERE project_id=?',projectId),
+    harnessDependencies: sql.all('SELECT * FROM harness_dependencies WHERE project_id=?',projectId),
+    harnessEvidence: sql.all('SELECT * FROM harness_evidence WHERE project_id=?',projectId),
+    harnessRuns: sql.all('SELECT * FROM harness_runs WHERE project_id=?',projectId),
+    harnessReceipts: sql.all('SELECT * FROM harness_receipts WHERE project_id=?',projectId),
+    harnessSnapshots: sql.all('SELECT * FROM harness_snapshots WHERE run_id IN (SELECT id FROM harness_runs WHERE project_id=?)',projectId),
+    schemaVersion: 4,
     exportedAt: sql.now(),
   }
 }

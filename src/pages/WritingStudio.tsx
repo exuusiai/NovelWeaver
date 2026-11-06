@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Type, Maximize2, Bookmark, BookmarkCheck, BookOpen, Check, ChevronDown, Copy, EyeOff, ChevronLeft, ChevronRight, Eye, FilePlus2, Filter, FolderPlus, History, ListTree, Loader2, PanelRightClose, Pencil, Pin, PinOff, RotateCcw, Save, ShieldAlert, Sparkles, Target, Trash2, WandSparkles } from 'lucide-react'
+import { HarnessPanel } from '../components/HarnessPanel'
+import { DiffView } from '../components/DiffView'
 import { api, patch, post, remove } from '../api'
 import { useNavigate } from 'react-router-dom'
 import { useProject } from '../project-context'
@@ -171,6 +173,7 @@ export function WritingStudio() {
     if (baseline && (baseline.detailed_outline || '') !== (current.detailed_outline || '')) changed.detailedOutline = current.detailed_outline || ''
     if (!baseline) { changed.title = current.title; changed.content = current.content; changed.summary = current.summary; changed.pov = current.pov; changed.status = current.status; changed.targetWords = current.target_words; changed.detailedOutline = current.detailed_outline || '' }
     if (expectedUpdatedRef.current) changed.expectedUpdatedAt = expectedUpdatedRef.current
+    if (current.revision) changed.baseRevision = current.revision
     const payload = changed
     const snapshot = snapshotOf(current)
     const previousSnapshot = savedSnapshotRef.current
@@ -181,7 +184,11 @@ export function WritingStudio() {
       if (draftRef.current?.id !== current.id) { savedSnapshotRef.current = previousSnapshot; return true }
       clearMirror(current.id)
       if (next.updated_at) expectedUpdatedRef.current = next.updated_at
-      setChapters((rows) => rows.map((row) => row.id === next.id ? { ...row, content: next.content } : row))
+      setChapters((rows) => rows.map((row) => row.id === next.id ? { ...row, ...next } : row))
+      if (draftRef.current?.id === next.id && snapshotOf(draftRef.current) === snapshot) {
+        draftRef.current = { ...draftRef.current, ...next }
+        savedSnapshotRef.current = snapshotOf(draftRef.current)
+      }
       setDraft((row) => row && row.id === next.id && snapshotOf(row) === snapshot ? { ...row, ...next } : row)
       errorSnapshotRef.current = ''
       setSaved(true); setAutosave('saved')
@@ -197,6 +204,7 @@ export function WritingStudio() {
         const choice = window.confirm('此章已在另一窗口修改并保存。\n\n确定 = 用我窗口的版本覆盖（服务器新版本将存入历史）；取消 = 载入服务器版本（我的修改留在本地草稿镜像里）。')
         if (choice && serverChapter?.updated_at) {
           expectedUpdatedRef.current = serverChapter.updated_at
+          if (draftRef.current) draftRef.current = { ...draftRef.current, revision: serverChapter.revision }
           // 释放锁再重试：save() 在 savingRef=true 时直接 return false，递归调用等于没重试
           savingRef.current = false; setSaving(false)
           return save()
@@ -542,7 +550,7 @@ export function WritingStudio() {
     </aside>
     <section className="editor-pane">
       {draft && <>
-        <header className="editor-toolbar"><div className="crumb">正文 <ChevronRight size={14} /> <span>{draft.title}</span></div><div className="chapter-nav-mobile"><IconButton label="新建章节" onClick={addChapter}><FilePlus2 size={16} /></IconButton><IconButton label="上一章" disabled={!prevChapter} onClick={() => prevChapter && void selectChapter(prevChapter.id)}><ChevronLeft size={16} /></IconButton><select value={draft.id} onChange={(event) => void selectChapter(event.target.value)} aria-label="跳转章节">{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{String(chapter.position + 1).padStart(2, '0')} {chapter.title}</option>)}</select><IconButton label="下一章" disabled={!nextChapter} onClick={() => nextChapter && void selectChapter(nextChapter.id)}><ChevronRight size={16} /></IconButton></div><div className="editor-actions"><Badge tone={draft.status === 'revised' ? 'teal' : 'neutral'}>{draft.status === 'revised' ? '已修订' : '草稿'}</Badge>{draft.content_hash && draft.analyzed_hash && draft.content_hash !== draft.analyzed_hash && <button className="stale-chip" onClick={() => navigate('/analysis')} title="本章正文已修改，人物/事件/事实仍基于旧稿；到分析中心重新分析后解除">分析基于旧稿</button>}<span className="save-state">{saved && <><Check size={14} /> 已保存</>}</span><IconButton label={focusMode ? '退出专注写作' : '专注写作（隐藏细纲与表单，只留正文）'} className={focusMode ? 'active' : ''} onClick={() => setFocusMode((v) => !v)}><Maximize2 size={17} /></IconButton><IconButton label="阅读设置（字号/行距/宽度）" onClick={() => setReaderOpen(true)}><Type size={17} /></IconButton><IconButton label="历史版本" onClick={openHistory}><History size={17} /></IconButton><IconButton label={draft.bookmarked ? '取消书签' : '添加书签'} className={draft.bookmarked ? 'active' : ''} onClick={() => updateMark({ bookmarked: !draft.bookmarked })}>{draft.bookmarked ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}</IconButton><IconButton label={draft.excluded ? '本章已设为保留但不导出' : '保留本章但不导出（备用稿）'} className={draft.excluded ? 'active' : ''} onClick={() => updateMark({ excluded: !draft.excluded })} title="保留在项目中、但不进入导出稿件"><EyeOff size={17} /></IconButton><Button variant="secondary" onClick={save} disabled={saving}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />} 保存</Button><IconButton label="删除当前章节" className="danger-icon" onClick={() => setDeleteOpen(true)}><Trash2 size={17} /></IconButton></div></header>
+        <header className="editor-toolbar"><div className="crumb">正文 <ChevronRight size={14} /> <span>{draft.title}</span></div><div className="chapter-nav-mobile"><IconButton label="新建章节" onClick={addChapter}><FilePlus2 size={16} /></IconButton><IconButton label="上一章" disabled={!prevChapter} onClick={() => prevChapter && void selectChapter(prevChapter.id)}><ChevronLeft size={16} /></IconButton><select value={draft.id} onChange={(event) => void selectChapter(event.target.value)} aria-label="跳转章节">{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{String(chapter.position + 1).padStart(2, '0')} {chapter.title}</option>)}</select><IconButton label="下一章" disabled={!nextChapter} onClick={() => nextChapter && void selectChapter(nextChapter.id)}><ChevronRight size={16} /></IconButton></div><div className="editor-actions"><Badge tone={draft.status === 'revised' ? 'teal' : 'neutral'}>{draft.status === 'revised' ? '已修订' : '草稿'}</Badge>{draft.content_hash && draft.content_hash !== draft.analyzed_hash && <button className="stale-chip" onClick={() => navigate('/analysis')} title="本章正文已修改，人物/事件/事实仍基于旧稿；到分析中心重新分析后解除">分析基于旧稿</button>}<span className="save-state">{saved && <><Check size={14} /> 已保存</>}</span><IconButton label={focusMode ? '退出专注写作' : '专注写作（隐藏细纲与表单，只留正文）'} className={focusMode ? 'active' : ''} onClick={() => setFocusMode((v) => !v)}><Maximize2 size={17} /></IconButton><IconButton label="阅读设置（字号/行距/宽度）" onClick={() => setReaderOpen(true)}><Type size={17} /></IconButton><IconButton label="历史版本" onClick={openHistory}><History size={17} /></IconButton><IconButton label={draft.bookmarked ? '取消书签' : '添加书签'} className={draft.bookmarked ? 'active' : ''} onClick={() => updateMark({ bookmarked: !draft.bookmarked })}>{draft.bookmarked ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}</IconButton><IconButton label={draft.excluded ? '本章已设为保留但不导出' : '保留本章但不导出（备用稿）'} className={draft.excluded ? 'active' : ''} onClick={() => updateMark({ excluded: !draft.excluded })} title="保留在项目中、但不进入导出稿件"><EyeOff size={17} /></IconButton><Button variant="secondary" onClick={save} disabled={saving}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />} 保存</Button><IconButton label="删除当前章节" className="danger-icon" onClick={() => setDeleteOpen(true)}><Trash2 size={17} /></IconButton></div></header>
         {!focusMode && <div className="editor-meta">{localDraftNotice && <div className="local-draft-notice"><span>检测到 {localDraftNotice.savedAt ? new Date(localDraftNotice.savedAt).toLocaleString('zh-CN') : ''} 的本地草稿与服务器正文不同（可能来自一次未完成的保存）。</span><Button variant="secondary" onClick={localDraftNotice.restore}>恢复本地草稿</Button><Button variant="ghost" onClick={() => { if (draft) { clearMirror(draft.id); } setLocalDraftNotice(null) }}>丢弃</Button></div>}<Input className="chapter-title-input" value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.target.value }); setChapters((rows) => rows.map((row) => row.id === draft.id ? { ...row, title: event.target.value } : row)) }} /><div className="chapter-facts"><label><span>所属卷</span><select className="input" value={draft.volume_id || ''} onChange={(event) => moveChapter(event.target.value)}>{volumes.map((volume) => <option key={volume.id} value={volume.id}>{volume.title}</option>)}</select></label><label><span>视角</span><Input value={draft.pov} onChange={(event) => setDraft({ ...draft, pov: event.target.value })} placeholder="未指定" /></label><label><span>目标</span><div><Target size={14} /><Input type="number" value={draft.target_words} onChange={(event) => setDraft({ ...draft, target_words: Number(event.target.value) })} /></div></label><label><span>重要性</span><select className="input importance-select" value={draft.importance} onChange={(event) => updateMark({ importance: event.target.value as Chapter['importance'] })}><option value="normal">普通</option><option value="important">重要</option><option value="critical">关键</option></select></label><span>{wordCount.toLocaleString()} 字</span></div><div className="summary-row"><Textarea className="summary-input" value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} placeholder="用一两句话记录本章的信息增量和状态变化……" rows={2} /><Button variant="secondary" className="summary-ai" onClick={rewriteSummary} disabled={summarizing || !draft.content.trim()} title="用模型重写本章摘要">{summarizing ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} AI 摘要</Button></div>{summaryNotice && <p className="summary-notice">{summaryNotice}</p>}</div>}
         {!focusMode && <section className={`chapter-outline ${outlineExpanded ? 'expanded' : ''}`}><header><button onClick={() => setOutlineExpanded((value) => !value)}>{outlineExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<ListTree size={15} /><strong>本章细纲</strong>{draft.detailed_outline ? (draft.outline_source ? <Badge tone="teal">由全书大纲拆分</Badge> : <Badge>手写细纲</Badge>) : <Badge tone="amber">还没有细纲</Badge>}</button>{outlineExpanded && <Button variant="ghost" onClick={() => setOutlineEditing((value) => !value)}><Pencil size={13} /> {outlineEditing ? '预览' : '编辑'}</Button>}{!draft.detailed_outline && !outlineEditing && <Button variant="ghost" onClick={() => setOutlineEditing(true)}><Pencil size={13} /> 手写细纲</Button>}</header>{outlineExpanded && <div>{outlineEditing ? <><Textarea rows={16} value={draft.detailed_outline} onChange={(event) => setDraft({ ...draft, detailed_outline: event.target.value })} placeholder="先手写构思，或用右侧创作 Agent 生成——写好后点保存细纲。" /><Button onClick={saveDetailedOutline}><Save size={14} /> 保存细纲</Button></> : draft.detailed_outline ? <MarkdownLike text={draft.detailed_outline} /> : <p className="outline-empty-hint">还没有细纲。<Button variant="ghost" onClick={() => setOutlineEditing(true)}><Pencil size={13} /> 手写</Button>或用右侧创作 Agent 生成。</p>}</div>}</section>}
         <Textarea className={`manuscript-editor ${focusMode ? 'focus-mode' : ''}`} style={{ fontSize: reader.fontSize, lineHeight: reader.lineHeight, maxWidth: reader.width }} value={draft.content} onSelect={(event) => captureSelection(event.currentTarget)} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="从一个正在发生的动作开始……" spellCheck={false} />
@@ -550,6 +558,17 @@ export function WritingStudio() {
       </>}
     </section>
     {panelOpen ? <aside className="ai-panel"><header><div><WandSparkles size={18} /><div><strong>创作 Agent</strong><span>{panelPinned ? '已固定在写作区' : '悬浮面板'}</span></div></div><span className="agent-panel-actions"><IconButton label={panelPinned ? '取消固定助手' : '固定助手'} onClick={() => setPanelPinned((value) => !value)}>{panelPinned ? <Pin size={17} /> : <PinOff size={17} />}</IconButton><IconButton label="收起助手" onClick={() => setPanelOpen(false)}><PanelRightClose size={18} /></IconButton></span></header>
+      {draft && <HarnessPanel key={draft.id} projectId={projectId} chapter={draft} selection={selectionRef.current?.chapterId === draft.id ? selectionRef.current : null} prepare={async () => {
+        if (!await save()) return null
+        return draftRef.current
+      }} onChanged={async () => {
+        const before = draftRef.current ? snapshotOf(draftRef.current) : ''
+        const rows = await api<Chapter[]>(`/api/projects/${projectId}/chapters`)
+        setChapters(rows)
+        const latest = rows.find(row => row.id === draftRef.current?.id)
+        if (latest && draftRef.current && before === snapshotOf(draftRef.current) && before === savedSnapshotRef.current) applyDraft(latest)
+        else setAdoptionNotice('改稿已保存；编辑器中的新改动保留，请对照章节历史处理。')
+      }} />}
       <div className="agent-context"><span>上下文</span><Badge tone="teal">当前章节</Badge><Badge>人物状态</Badge><Badge>活跃剧情线</Badge><Badge>相关原文</Badge></div>
       <div className="agent-tabs"><button className={task === 'chapter_outline' ? 'active' : ''} onClick={() => setTask('chapter_outline')}>章节细纲</button><button className={task === 'prose' ? 'active' : ''} onClick={() => setTask('prose')}>正文草稿</button></div>
       {task === 'chapter_outline' && <div className="workshop-steps">{[['scan', '扫描'], ['motivation', '动机'], ['conflict', '冲突'], ['scenes', '场景'], ['check', '检查']].map(([value, label], index) => <button key={value} className={workshopStage === value ? 'active' : ''} onClick={() => chooseStage(value)}><span>{index + 1}</span>{label}</button>)}</div>}
@@ -588,26 +607,4 @@ export function WritingStudio() {
     {volumeOpen && <Modal title="新建分卷" onClose={() => setVolumeOpen(false)} footer={<><Button variant="ghost" onClick={() => setVolumeOpen(false)}>取消</Button><Button onClick={addVolume} disabled={!volumeForm.title.trim()}>创建分卷</Button></>}><div className="form-grid"><Field label="卷名"><Input autoFocus value={volumeForm.title} onChange={(event) => setVolumeForm({ ...volumeForm, title: event.target.value })} placeholder="例如：第一卷 雾港来信" /></Field><Field label="卷摘要"><Textarea rows={5} value={volumeForm.summary} onChange={(event) => setVolumeForm({ ...volumeForm, summary: event.target.value })} placeholder="记录本卷核心目标、状态变化与卷末落点" /></Field></div></Modal>}
     {editingVolume && <Modal title="编辑分卷" onClose={() => setEditingVolume(null)} footer={<>{volumes.length > 1 && <Button variant="danger" onClick={deleteVolume}><Trash2 size={14} /> 删除分卷</Button>}<Button variant="ghost" onClick={() => setEditingVolume(null)}>取消</Button><Button onClick={saveVolume} disabled={!editingVolume.title.trim()}>保存</Button></>}><div className="form-grid"><Field label="卷名"><Input value={editingVolume.title} onChange={(event) => setEditingVolume({ ...editingVolume, title: event.target.value })} /></Field><Field label="卷摘要"><Textarea rows={6} value={editingVolume.summary} onChange={(event) => setEditingVolume({ ...editingVolume, summary: event.target.value })} placeholder="卷摘要会优先进入本卷章节的生成上下文" /></Field></div></Modal>}
   </div>
-}
-
-
-function DiffView({ left, right }: { left: string; right: string }) {
-  // 段落级对比（LCS 对齐，零依赖）：del=仅当前版本（恢复后失去），add=仅历史版本
-  const split = (text: string) => text.split(/\n+/).map((p) => p.trim()).filter(Boolean)
-  const a = split(left); const b = split(right)
-  const n = a.length; const m = b.length
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
-  for (let i = n - 1; i >= 0; i -= 1) for (let j = m - 1; j >= 0; j -= 1) {
-    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
-  }
-  const ops: Array<{ type: 'same' | 'add' | 'del'; text: string }> = []
-  let i = 0; let j = 0
-  while (i < n && j < m) {
-    if (a[i] === b[j]) { ops.push({ type: 'same', text: a[i] }); i += 1; j += 1 }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ type: 'del', text: a[i] }); i += 1 }
-    else { ops.push({ type: 'add', text: b[j] }); j += 1 }
-  }
-  while (i < n) { ops.push({ type: 'del', text: a[i] }); i += 1 }
-  while (j < m) { ops.push({ type: 'add', text: b[j] }); j += 1 }
-  return <div className="history-diff"><p className="diff-hint">− 仅当前版本（恢复后失去） · + 仅该历史版本</p>{ops.map((op, index) => <p key={index} className={`diff-${op.type}`}>{op.type === 'del' ? '− ' : op.type === 'add' ? '+ ' : ''}{op.text}</p>)}</div>
 }

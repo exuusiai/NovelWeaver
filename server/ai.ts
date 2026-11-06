@@ -69,13 +69,14 @@ export interface ModelUsage {
   total_tokens?: number
 }
 
-async function chatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>, temperature = 0.2, json = false, options: { maxTokens?: number; disableThinking?: boolean; timeoutMs?: number } = {}): Promise<{ text: string; usage?: ModelUsage }> {
-  if (!runtimeConfig.apiKey) throw Object.assign(new Error('当前未配置模型 API。请先在设置页填写 API Key。'), { code: 'MODEL_REQUIRED' })
-  const request = (strictJson: boolean, disableThinking: boolean) => fetch(`${runtimeConfig.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+async function chatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>, temperature = 0.2, json = false, options: { maxTokens?: number; disableThinking?: boolean; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<{ text: string; usage?: ModelUsage }> {
+  const credentials={...runtimeConfig}
+  if (!credentials.apiKey) throw Object.assign(new Error('当前未配置模型 API。请先在设置页填写 API Key。'), { code: 'MODEL_REQUIRED' })
+  const request = (strictJson: boolean, disableThinking: boolean) => fetch(`${credentials.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtimeConfig.apiKey}` },
-    signal: AbortSignal.timeout(options.timeoutMs ?? 120000),
-    body: JSON.stringify({ model: runtimeConfig.model, temperature, ...((options.maxTokens || json) ? { max_tokens: options.maxTokens ?? 16000 } : {}), ...(disableThinking ? { thinking: { type: 'disabled' } } : {}), ...(strictJson ? { response_format: { type: 'json_object' } } : {}), messages }),
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${credentials.apiKey}` },
+    signal: AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? 120000), ...(options.signal ? [options.signal] : [])]),
+    body: JSON.stringify({ model: credentials.model, temperature, ...((options.maxTokens || json) ? { max_tokens: options.maxTokens ?? 16000 } : {}), ...(disableThinking ? { thinking: { type: 'disabled' } } : {}), ...(strictJson ? { response_format: { type: 'json_object' } } : {}), messages }),
   })
   let disableThinking = (options.disableThinking ?? true) && thinkingSupport !== 'unsupported'
   let response = await request(json, disableThinking)
@@ -129,6 +130,11 @@ async function chatCompletion(messages: Array<{ role: 'system' | 'user'; content
 
 export async function structuredCompletion(system: string, prompt: string) {
   return (await chatCompletion([{ role: 'system', content: system }, { role: 'user', content: prompt }], 0.1, true)).text
+}
+
+export async function harnessCompletion(system: string, prompt: string, options: { signal: AbortSignal; maxOutputTokens: number }) {
+  const result = await chatCompletion([{ role: 'system', content: system }, { role: 'user', content: prompt }], 0.1, true, { signal: options.signal, maxTokens: options.maxOutputTokens })
+  return { text: result.text, usage: result.usage ? { inputTokens: result.usage.prompt_tokens ?? 0, outputTokens: result.usage.completion_tokens ?? 0 } : undefined }
 }
 
 // One-shot chapter summary rewrite. Pure model call — the caller owns all database updates.
